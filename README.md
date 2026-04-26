@@ -1,4 +1,5 @@
-# Welcome to your Expo app 👋
+# hogyeong_crew
+호경크루의 등산앱
 
 This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
 
