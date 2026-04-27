@@ -23,9 +23,10 @@ export default function MapView({ currentLocation }: MapViewProps) {
   return (
     <View style={styles.container}>
       {/* iOS는 기본 애플 맵, Android는 구글 맵을 사용할 수 있도록 PROVIDER 설정을 유동적으로 할 수 있습니다. */}
-      {/* 여기서는 안드로이드/iOS 모두 지원 가능한 기본 react-native-maps를 사용합니다. */}
+      {/* 여기서는 안드로이드/iOS 모두 동일하게 구글 맵을 일관성 있게 사용하도록 설정합니다. */}
       <NativeMapView
         style={styles.map}
+        provider={PROVIDER_GOOGLE}
         initialRegion={initialRegion}
         showsUserLocation={true}
         showsMyLocationButton={true}
