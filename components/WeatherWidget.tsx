@@ -1,114 +1,235 @@
+// 홈 화면용 날씨 카드 — 날씨 정보 + 유의성 테스트 결과 표시
 import React, { useEffect, useState } from 'react';
-import { StyleSheet, ActivityIndicator } from 'react-native';
+import {
+  StyleSheet,
+  View,
+  Text,
+  ActivityIndicator,
+  TouchableOpacity,
+} from 'react-native';
 import * as Location from 'expo-location';
-import { ThemedText } from './themed-text';
-import { ThemedView } from './themed-view';
-import { Ionicons } from '@expo/vector-icons';
-
-// Open-Meteo WMO Weather Code Mapping
-const getWeatherDescription = (code: number) => {
-  if (code === 0) return { text: '맑음', icon: 'sunny' as const };
-  if (code === 1 || code === 2 || code === 3) return { text: '구름조금/흐림', icon: 'partly-sunny' as const };
-  if (code === 45 || code === 48) return { text: '안개', icon: 'cloud-offline' as const };
-  if (code >= 51 && code <= 67) return { text: '비/이슬비', icon: 'rainy' as const };
-  if (code >= 71 && code <= 77) return { text: '눈', icon: 'snow' as const };
-  if (code >= 80 && code <= 82) return { text: '소나기', icon: 'water' as const };
-  if (code >= 95 && code <= 99) return { text: '천둥번개', icon: 'thunderstorm' as const };
-  return { text: '알 수 없음', icon: 'cloud' as const };
-};
+import {
+  fetchWeather,
+  evaluateHikingSafety,
+  weatherIconToEmoji,
+  WeatherData,
+  SafetyResult,
+} from '../utils/weather';
 
 export function WeatherWidget() {
-  const [weather, setWeather] = useState<any>(null);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [weather, setWeather] = useState<WeatherData | null>(null);
+  const [safety, setSafety] = useState<SafetyResult | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState(false);
 
-  useEffect(() => {
-    (async () => {
-      try {
-        let { status } = await Location.requestForegroundPermissionsAsync();
-        if (status !== 'granted') {
-          setErrorMsg('위치 권한이 필요합니다.');
-          setLoading(false);
-          return;
-        }
-
-        let location = await Location.getCurrentPositionAsync({});
-        const lat = location.coords.latitude;
-        const lon = location.coords.longitude;
-
-        const response = await fetch(
-          `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m&timezone=auto`
-        );
-        const data = await response.json();
-        setWeather(data.current);
-      } catch (error) {
-        setErrorMsg('날씨 정보를 가져오는 데 실패했습니다.');
-      } finally {
-        setLoading(false);
+  const load = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        setError('위치 권한이 필요합니다.');
+        return;
       }
-    })();
-  }, []);
+      const loc = await Location.getCurrentPositionAsync({});
+      const w = await fetchWeather(loc.coords.latitude, loc.coords.longitude);
+      setWeather(w);
+      setSafety(evaluateHikingSafety(w));
+    } catch (e: any) {
+      setError(e.message ?? '날씨 정보를 가져올 수 없습니다.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { load(); }, []);
 
   if (loading) {
     return (
-      <ThemedView style={styles.container}>
-        <ActivityIndicator size="small" color="#0000ff" />
-        <ThemedText style={{ marginLeft: 10 }}>날씨 정보를 불러오는 중...</ThemedText>
-      </ThemedView>
+      <View style={styles.card}>
+        <ActivityIndicator color="#1DB954" />
+        <Text style={styles.loadingText}>날씨 불러오는 중...</Text>
+      </View>
     );
   }
 
-  if (errorMsg) {
+  if (error || !weather || !safety) {
     return (
-      <ThemedView style={styles.container}>
-        <ThemedText style={styles.errorText}>{errorMsg}</ThemedText>
-      </ThemedView>
+      <View style={styles.card}>
+        <Text style={styles.errorText}>{error ?? '날씨 정보 없음'}</Text>
+        <TouchableOpacity onPress={load} style={styles.retryButton}>
+          <Text style={styles.retryText}>다시 시도</Text>
+        </TouchableOpacity>
+      </View>
     );
   }
 
-  if (!weather) return null;
-
-  const weatherInfo = getWeatherDescription(weather.weather_code);
+  const safetyColor = safety.level === 'safe' ? '#1DB954' : safety.level === 'caution' ? '#F39C12' : '#E74C3C';
+  const safetBg = safety.level === 'safe' ? '#E8F8EE' : safety.level === 'caution' ? '#FEF9E7' : '#FDEDEC';
 
   return (
-    <ThemedView style={styles.container}>
-      <Ionicons name={weatherInfo.icon} size={32} color="#007AFF" />
-      <ThemedView style={styles.infoContainer}>
-        <ThemedText type="defaultSemiBold" style={styles.temperature}>
-          {weather.temperature_2m}°C
-        </ThemedText>
-        <ThemedText type="default">{weatherInfo.text}</ThemedText>
-      </ThemedView>
-      <ThemedView style={styles.detailsContainer}>
-        <ThemedText type="default">습도: {weather.relative_humidity_2m}%</ThemedText>
-        <ThemedText type="default">풍속: {weather.wind_speed_10m}km/h</ThemedText>
-      </ThemedView>
-    </ThemedView>
+    <View style={styles.card}>
+      {/* 메인 날씨 정보 */}
+      <View style={styles.mainRow}>
+        <View>
+          <Text style={styles.emoji}>{weatherIconToEmoji(weather.icon)}</Text>
+        </View>
+        <View style={styles.tempSection}>
+          <Text style={styles.temp}>{weather.temp}°C</Text>
+          <Text style={styles.desc}>{weather.description}</Text>
+          {weather.cityName ? <Text style={styles.city}>📍 {weather.cityName}</Text> : null}
+        </View>
+        <View style={styles.detailSection}>
+          <Text style={styles.detail}>💧 {weather.humidity}%</Text>
+          <Text style={styles.detail}>💨 {weather.windSpeed.toFixed(1)}m/s</Text>
+          <Text style={styles.detail}>🌡️ 체감 {weather.feelsLike}°C</Text>
+        </View>
+      </View>
+
+      {/* 유의성 테스트 결과 배너 */}
+      <TouchableOpacity
+        style={[styles.safetyBanner, { backgroundColor: safetBg, borderColor: safetyColor }]}
+        onPress={() => setExpanded(!expanded)}
+        activeOpacity={0.8}
+      >
+        <View style={styles.safetyHeader}>
+          <Text style={styles.safetyEmoji}>{safety.emoji}</Text>
+          <View style={{ flex: 1 }}>
+            <Text style={[styles.safetyTitle, { color: safetyColor }]}>
+              등산 안전 지수 {safety.score}점
+            </Text>
+            <Text style={[styles.safetyRec, { color: safetyColor }]} numberOfLines={expanded ? undefined : 1}>
+              {safety.recommendation}
+            </Text>
+          </View>
+          <Text style={{ color: safetyColor, fontSize: 16 }}>{expanded ? '▲' : '▼'}</Text>
+        </View>
+
+        {/* 펼침 — 유의 사항 상세 */}
+        {expanded && safety.reasons.length > 0 && (
+          <View style={styles.reasonsContainer}>
+            {safety.reasons.map((r, i) => (
+              <Text key={i} style={[styles.reasonText, { color: safetyColor }]}>• {r}</Text>
+            ))}
+          </View>
+        )}
+        {expanded && safety.reasons.length === 0 && (
+          <Text style={[styles.reasonText, { color: safetyColor }]}>• 특별한 유의 사항 없음</Text>
+        )}
+      </TouchableOpacity>
+
+      <Text style={styles.attributionText}>데이터 제공: 기상청(공공데이터포털)</Text>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: 16,
-    borderRadius: 12,
-    backgroundColor: 'rgba(150, 150, 150, 0.1)',
+  card: {
+    backgroundColor: '#FFF',
+    borderRadius: 20,
+    padding: 18,
     marginVertical: 10,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    elevation: 4,
+    gap: 14,
   },
-  infoContainer: {
-    marginLeft: 12,
-    marginRight: 'auto',
-    backgroundColor: 'transparent',
-  },
-  temperature: {
-    fontSize: 20,
-  },
-  detailsContainer: {
-    alignItems: 'flex-end',
-    backgroundColor: 'transparent',
+  loadingText: {
+    marginTop: 8,
+    color: '#888',
+    textAlign: 'center',
   },
   errorText: {
-    color: '#ff4444',
+    color: '#E74C3C',
+    textAlign: 'center',
+  },
+  retryButton: {
+    marginTop: 8,
+    alignSelf: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 6,
+    borderRadius: 12,
+    backgroundColor: '#F0F0F0',
+  },
+  retryText: {
+    color: '#555',
+    fontWeight: '600',
+  },
+  mainRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  emoji: {
+    fontSize: 48,
+  },
+  tempSection: {
+    flex: 1,
+  },
+  temp: {
+    fontSize: 32,
+    fontWeight: '900',
+    color: '#111',
+  },
+  desc: {
+    fontSize: 14,
+    color: '#555',
+    marginTop: 2,
+    textTransform: 'capitalize',
+  },
+  city: {
+    fontSize: 12,
+    color: '#999',
+    marginTop: 2,
+  },
+  detailSection: {
+    alignItems: 'flex-end',
+    gap: 4,
+  },
+  detail: {
+    fontSize: 13,
+    color: '#666',
+  },
+  safetyBanner: {
+    borderRadius: 14,
+    borderWidth: 1.5,
+    padding: 14,
+    gap: 8,
+  },
+  safetyHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  safetyEmoji: {
+    fontSize: 24,
+  },
+  safetyTitle: {
+    fontSize: 15,
+    fontWeight: '800',
+  },
+  safetyRec: {
+    fontSize: 12,
+    marginTop: 2,
+    lineHeight: 17,
+  },
+  reasonsContainer: {
+    marginTop: 6,
+    gap: 4,
+    paddingLeft: 4,
+  },
+  reasonText: {
+    fontSize: 13,
+    lineHeight: 20,
+  },
+  attributionText: {
+    fontSize: 10,
+    color: '#AAA',
+    textAlign: 'right',
+    marginTop: -4,
+    marginRight: 4,
   },
 });

@@ -1,46 +1,111 @@
-import React from 'react';
-import { StyleSheet, View } from 'react-native';
-import MapView as NativeMapView, { Marker, PROVIDER_GOOGLE } from 'react-native-maps';
+import React, { useEffect, useMemo, useRef } from 'react';
+import { Image, StyleSheet, View, Platform } from 'react-native';
 
-// 추후 다른 지도 API (예: 네이버 지도, 카카오 맵)로 변경할 경우
-// 이 파일 내부만 수정하면 앱 전체의 지도가 변경되도록 모듈화된 컴포넌트입니다.
-
-interface MapViewProps {
-  currentLocation?: {
-    latitude: number;
-    longitude: number;
-  };
+let NativeMapView: any = View;
+let Marker: any = View;
+let Polyline: any = View;
+let WMSTile: any = View;
+let PROVIDER_GOOGLE: any = null;
+if (Platform.OS !== 'web') {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const maps = require('react-native-maps');
+  NativeMapView = maps.default;
+  Marker = maps.Marker;
+  Polyline = maps.Polyline;
+  WMSTile = maps.WMSTile;
+  PROVIDER_GOOGLE = maps.PROVIDER_GOOGLE;
 }
 
-export default function MapView({ currentLocation }: MapViewProps) {
-  const initialRegion = {
-    latitude: currentLocation?.latitude || 37.5665, // 기본값: 서울
+
+
+
+export interface Coordinate {
+  latitude: number;
+  longitude: number;
+}
+
+export interface MapPhoto {
+  id?: number;
+  latitude: number;
+  longitude: number;
+  local_uri: string;
+  timestamp?: number;
+}
+
+interface MapViewProps {
+  currentLocation?: Coordinate;
+  routeCoordinates?: Coordinate[];
+  photos?: MapPhoto[];
+}
+
+
+export default function MapView({ currentLocation, routeCoordinates = [], photos = [] }: MapViewProps) {
+  const mapRef = useRef<any>(null);
+
+  const currentRegion = useMemo(() => ({
+    latitude: currentLocation?.latitude || 37.5665,
     longitude: currentLocation?.longitude || 126.9780,
     latitudeDelta: 0.0922,
     longitudeDelta: 0.0421,
-  };
+  }), [currentLocation?.latitude, currentLocation?.longitude]);
+
+  const shouldRenderVWorldTiles = Platform.OS !== 'web' && Boolean(process.env.EXPO_PUBLIC_VWORLD_API_KEY);
+
+  useEffect(() => {
+    if (!currentLocation || Platform.OS === 'web') {
+      return;
+    }
+
+    mapRef.current?.animateToRegion?.(currentRegion, 500);
+  }, [currentLocation, currentRegion]);
 
   return (
     <View style={styles.container}>
-      {/* iOS는 기본 애플 맵, Android는 구글 맵을 사용할 수 있도록 PROVIDER 설정을 유동적으로 할 수 있습니다. */}
-      {/* 여기서는 안드로이드/iOS 모두 동일하게 구글 맵을 일관성 있게 사용하도록 설정합니다. */}
       <NativeMapView
+        ref={mapRef}
         style={styles.map}
         provider={PROVIDER_GOOGLE}
-        initialRegion={initialRegion}
+        mapType="standard"
+        initialRegion={currentRegion}
         showsUserLocation={true}
         showsMyLocationButton={true}
       >
-        {currentLocation && (
-          <Marker
-            coordinate={{
-              latitude: currentLocation.latitude,
-              longitude: currentLocation.longitude,
-            }}
-            title="현재 위치"
-            description="등산 출발점"
+        {shouldRenderVWorldTiles && (
+          <WMSTile
+            urlTemplate={`https://api.vworld.kr/req/wms?SERVICE=WMS&REQUEST=GetMap&VERSION=1.3.0&LAYERS=lt_l_frstclimb&STYLES=lt_l_frstclimb&CRS=EPSG:3857&BBOX={minX},{minY},{maxX},{maxY}&WIDTH=256&HEIGHT=256&FORMAT=image/png&TRANSPARENT=true&KEY=${process.env.EXPO_PUBLIC_VWORLD_API_KEY}`}
+            zIndex={1}
+            opacity={0.8}
+            tileSize={256}
           />
         )}
+        {currentLocation && routeCoordinates.length === 0 && (
+          <Marker
+            coordinate={currentLocation}
+            title="현재 위치"
+            description="등산 대기 중"
+          />
+        )}
+
+        {routeCoordinates.length > 0 && (
+          <Polyline
+            coordinates={routeCoordinates}
+            strokeColor="#2ECC71"
+            strokeWidth={5}
+            zIndex={10}
+          />
+        )}
+
+        {photos.map((photo) => (
+          <Marker
+            key={`photo-${photo.id ?? `${photo.timestamp ?? 'no-ts'}-${photo.local_uri}`}`}
+            coordinate={{ latitude: photo.latitude, longitude: photo.longitude }}
+            title="촬영 포인트"
+          >
+            <View style={styles.markerContainer}>
+              <Image source={{ uri: photo.local_uri }} style={styles.markerImage} />
+            </View>
+          </Marker>
+        ))}
       </NativeMapView>
     </View>
   );
@@ -50,13 +115,32 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     overflow: 'hidden',
-    borderRadius: 20, // 귀여운 느낌을 위한 둥근 테두리
+    borderRadius: 20,
     margin: 10,
     borderWidth: 2,
-    borderColor: '#FF6B6B', // 테마 포인트 컬러
+    borderColor: '#FF6B6B',
   },
   map: {
     width: '100%',
     height: '100%',
+  },
+  markerContainer: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    borderWidth: 2,
+    borderColor: '#fff',
+    overflow: 'hidden',
+    backgroundColor: '#ddd',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 2,
+    elevation: 4,
+  },
+  markerImage: {
+    width: '100%',
+    height: '100%',
+    resizeMode: 'cover',
   },
 });
