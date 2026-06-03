@@ -66,7 +66,7 @@ export const syncLocationsToCloud = async (): Promise<boolean> => {
           altitude: location.altitude,
           recorded_at: new Date(location.timestamp).toISOString(),
         })),
-        { onConflict: 'local_id' },
+        { onConflict: 'user_id,local_id' },
       );
 
     if (error) {
@@ -114,7 +114,7 @@ export const syncPhotosToCloud = async (): Promise<boolean> => {
               public_url: uploadedPhoto.publicUrl,
               taken_at: new Date(photo.timestamp).toISOString(),
             },
-            { onConflict: 'local_id' },
+            { onConflict: 'user_id,local_id' },
           );
 
         if (error) {

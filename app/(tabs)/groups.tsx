@@ -72,6 +72,13 @@ interface GroupHike {
   participants_count: number;
 }
 
+interface JoinGroupResult {
+  group_id: string;
+  group_name: string;
+  joined: boolean;
+  already_member: boolean;
+}
+
 const formatMeetingAt = (iso: string) => {
   if (!iso) return '';
   return new Date(iso).toLocaleString('ko-KR', {
@@ -217,35 +224,29 @@ export default function GroupsScreen() {
     if (!user?.id) { Alert.alert('로그인 필요', '그룹에 참여하려면 로그인이 필요합니다.'); return; }
 
     try {
-      const { data: groupData, error } = await supabase
-        .from('groups').select('id, name')
-        .eq('invite_code', inviteCodeInput.trim().toUpperCase()).single();
-      if (error || !groupData) { Alert.alert('오류', '유효하지 않은 초대 코드입니다.'); return; }
+      const { data, error } = await supabase.rpc('join_group_by_invite_code', {
+        p_invite_code: inviteCodeInput.trim().toUpperCase(),
+      });
+      if (error) throw error;
 
-      const { error: joinError } = await supabase
-        .from('group_members').insert([{ group_id: groupData.id, user_id: user.id }]);
-      if (joinError) {
-        if (isDuplicateMembershipError(joinError)) {
-          Alert.alert('이미 참여 중', `${groupData.name} 그룹에 이미 참여하고 있습니다.`);
-          setJoinGroupModal(false);
-          setInviteCodeInput('');
-          fetchGroups();
-          return;
-        }
-        throw joinError;
-      }
+      const result = (data?.[0] ?? null) as JoinGroupResult | null;
+      if (!result) { Alert.alert('오류', '그룹 참여 결과를 확인할 수 없습니다.'); return; }
 
       setJoinGroupModal(false); setInviteCodeInput('');
       fetchGroups();
-      Alert.alert('참여 완료 🎉', `${groupData.name} 그룹에 참여했습니다!`);
+      if (result.already_member) {
+        Alert.alert('이미 참여 중', `${result.group_name} 그룹에 이미 참여하고 있습니다.`);
+        return;
+      }
+      Alert.alert('참여 완료 🎉', `${result.group_name} 그룹에 참여했습니다!`);
     } catch (e: any) { Alert.alert('오류', e.message); }
   };
 
   const handleInviteViaKakao = async (group: Group) => {
     try {
       await Share.share({
-        message: `[호경크루] ${group.name} 그룹에 초대합니다! 🏔️\n앱에서 초대 코드를 입력해 참여하세요.\n초대 코드: ${group.invite_code}`,
-        title: '호경크루 그룹 초대',
+        message: `[덩산] ${group.name} 그룹에 초대합니다! 🏔️\n앱에서 초대 코드를 입력해 참여하세요.\n초대 코드: ${group.invite_code}`,
+        title: '덩산 그룹 초대',
       });
     } catch (e: any) { console.error(e.message); }
   };

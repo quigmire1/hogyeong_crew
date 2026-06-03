@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { StyleSheet, View, Text, TouchableOpacity, ActivityIndicator, Alert } from 'react-native';
+import { StyleSheet, View, Text, TouchableOpacity, ActivityIndicator, Alert, Platform } from 'react-native';
 import { useRouter } from 'expo-router';
 import * as Location from 'expo-location';
 import * as ImagePicker from 'expo-image-picker';
+import Constants from 'expo-constants';
 import { FontAwesome } from '@expo/vector-icons';
 import MapView, { Coordinate } from '../../components/map/MapView';
 import { Colors } from '../../constants/theme';
@@ -15,6 +16,8 @@ import { WeatherBadge } from '../../components/WeatherBadge';
 import { fetchWeather, evaluateHikingSafety } from '../../utils/weather';
 import { saveHikeSession } from '../../utils/weatherFairy';
 import { useAuth } from '../../contexts/AuthContext';
+
+const isIosExpoGo = Platform.OS === 'ios' && Constants.appOwnership === 'expo';
 
 export default function TrackerScreen() {
   const colorScheme = useColorScheme();
@@ -36,6 +39,7 @@ export default function TrackerScreen() {
   const [photos, setPhotos] = useState<PhotoRecord[]>([]);
   const [elevationGain, setElevationGain] = useState(0);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const foregroundLocationSubRef = useRef<Location.LocationSubscription | null>(null);
 
   const loadRouteFromDB = useCallback(async (sessionIdOverride?: string) => {
     try {
@@ -81,10 +85,46 @@ export default function TrackerScreen() {
     }
   };
 
+  const stopForegroundTracking = () => {
+    foregroundLocationSubRef.current?.remove();
+    foregroundLocationSubRef.current = null;
+  };
+
+  const startForegroundTracking = useCallback(async (sessionId: string) => {
+    stopForegroundTracking();
+
+    foregroundLocationSubRef.current = await Location.watchPositionAsync(
+      {
+        accuracy: Location.Accuracy.High,
+        timeInterval: 10000,
+        distanceInterval: 5,
+      },
+      async (nextLocation) => {
+        try {
+          setLocation(nextLocation);
+          await insertLocation(
+            nextLocation.coords.latitude,
+            nextLocation.coords.longitude,
+            nextLocation.coords.altitude ?? 0,
+            nextLocation.timestamp,
+            sessionId,
+          );
+          await loadRouteFromDB(sessionId);
+        } catch (e) {
+          console.error('[Tracker] Failed to save foreground location:', e);
+        }
+      },
+    );
+  }, [loadRouteFromDB]);
+
   const requestTrackingPermissions = async () => {
     const { status: fgStatus } = await Location.requestForegroundPermissionsAsync();
     if (fgStatus !== 'granted') {
       throw new Error('위치 정보 접근 권한이 거부되었습니다.');
+    }
+
+    if (isIosExpoGo) {
+      return;
     }
 
     const { status: bgStatus } = await Location.requestBackgroundPermissionsAsync();
@@ -104,12 +144,14 @@ export default function TrackerScreen() {
           return;
         }
 
-        const { status: bgStatus } = await Location.requestBackgroundPermissionsAsync();
-        if (bgStatus !== 'granted') {
-          Alert.alert(
-            '백그라운드 위치 권한 필요',
-            '앱이 백그라운드에 있을 때도 경로를 기록하려면 "항상 허용" 권한이 필요합니다.'
-          );
+        if (!isIosExpoGo) {
+          const { status: bgStatus } = await Location.requestBackgroundPermissionsAsync();
+          if (bgStatus !== 'granted') {
+            Alert.alert(
+              '백그라운드 위치 권한 필요',
+              '앱이 백그라운드에 있을 때도 경로를 기록하려면 "항상 허용" 권한이 필요합니다.'
+            );
+          }
         }
 
         const currentLocation = await Location.getCurrentPositionAsync({});
@@ -117,7 +159,7 @@ export default function TrackerScreen() {
         setLocation(currentLocation);
 
         const activeSessionId = await getCurrentSessionId();
-        const isTaskRunning = await isLocationTaskRunning();
+        const isTaskRunning = isIosExpoGo ? false : await isLocationTaskRunning();
         if (!isMounted) return;
 
         if (activeSessionId && isTaskRunning) {
@@ -132,6 +174,19 @@ export default function TrackerScreen() {
           setIsTracking(true);
           await loadRouteFromDB(activeSessionId);
           startRouteRefresh();
+        } else if (activeSessionId && isIosExpoGo) {
+          currentSessionIdRef.current = activeSessionId;
+
+          const sessions = await getAllSessions();
+          const activeSession = sessions.find((session) => session.id === activeSessionId);
+          sessionStartRef.current = activeSession
+            ? new Date(activeSession.started_at).toISOString()
+            : null;
+
+          setIsTracking(true);
+          await loadRouteFromDB(activeSessionId);
+          await startForegroundTracking(activeSessionId);
+          startRouteRefresh();
         } else if (activeSessionId && !isTaskRunning) {
           await setCurrentSessionId('');
         }
@@ -144,9 +199,10 @@ export default function TrackerScreen() {
 
     return () => {
       isMounted = false;
+      stopForegroundTracking();
       stopRouteRefresh();
     };
-  }, [loadRouteFromDB, startRouteRefresh]);
+  }, [loadRouteFromDB, startForegroundTracking, startRouteRefresh]);
 
   const handleSync = async () => {
     setIsSyncing(true);
@@ -169,7 +225,10 @@ export default function TrackerScreen() {
     let weatherNotice = '';
 
     try {
-      await stopLocationTask();
+      stopForegroundTracking();
+      if (!isIosExpoGo) {
+        await stopLocationTask();
+      }
       stopRouteRefresh();
       setIsTracking(false);
 
@@ -249,21 +308,28 @@ export default function TrackerScreen() {
       setPhotos([]);
       setElevationGain(0);
 
-      await startLocationTask({
-        accuracy: Location.Accuracy.High,
-        timeInterval: 10000,
-        distanceInterval: 5,
-        foregroundService: {
-          notificationTitle: '호경크루',
-          notificationBody: '산행 경로를 백그라운드에서 기록 중입니다.',
-          notificationColor: '#2ECC71',
-        },
-      });
+      if (isIosExpoGo) {
+        await startForegroundTracking(newSessionId);
+      } else {
+        await startLocationTask({
+          accuracy: Location.Accuracy.High,
+          timeInterval: 10000,
+          distanceInterval: 5,
+          foregroundService: {
+            notificationTitle: '호경크루',
+            notificationBody: '산행 경로를 백그라운드에서 기록 중입니다.',
+            notificationColor: '#2ECC71',
+          },
+        });
+      }
 
       setIsTracking(true);
       startRouteRefresh();
     } catch (error) {
-      await stopLocationTask();
+      stopForegroundTracking();
+      if (!isIosExpoGo) {
+        await stopLocationTask();
+      }
       if (newSessionId) {
         await endSession(newSessionId);
       }

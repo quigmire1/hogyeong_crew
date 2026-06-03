@@ -1,5 +1,7 @@
 import { useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
+import * as AuthSession from 'expo-auth-session';
+import * as Linking from 'expo-linking';
 import * as WebBrowser from 'expo-web-browser';
 import React, { useState } from 'react';
 import {
@@ -19,6 +21,8 @@ import { supabase } from '../../utils/supabase';
 
 // WebBrowser 닫기 처리를 위해 필요
 WebBrowser.maybeCompleteAuthSession();
+
+const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 export default function LoginScreen() {
   const [email, setEmail] = useState('');
@@ -69,12 +73,19 @@ export default function LoginScreen() {
   async function signInWithKakao() {
     setKakaoLoading(true);
     try {
-      // Supabase 프로젝트 URL에서 redirectTo 설정
-      // hogyeongcrew:// 스킴으로 앱으로 다시 돌아오게 처리
-      const redirectUrl = 'hogyeongcrew://auth/callback';
+      // Expo Go에서는 exp://.../--/auth/callback, dev build/standalone에서는
+      // hogyeongcrew://auth/callback으로 돌아오게 처리합니다.
+      const nativeRedirectUrl = 'hogyeongcrew://auth/callback';
+      const redirectPath = 'auth/callback';
+      const redirectUrl = AuthSession.makeRedirectUri({
+        native: nativeRedirectUrl,
+        scheme: 'hogyeongcrew',
+        path: redirectPath,
+      });
 
       console.log('--- Kakao Login Debug ---');
-      console.log('1. Local Redirect URL (Wait for this):', redirectUrl);
+      console.log('1. Redirect URL (Wait for this):', redirectUrl);
+      console.log('[Kakao Login] Native Redirect URL:', nativeRedirectUrl);
 
       const { data, error } = await supabase.auth.signInWithOAuth({
         provider: 'kakao',
@@ -97,23 +108,61 @@ export default function LoginScreen() {
       console.log('2. Supabase Auth URL:', data.url);
       console.log('-------------------------');
 
-      // 시스템 브라우저로 카카오 로그인 페이지 열기
-      const result = await WebBrowser.openAuthSessionAsync(data.url, redirectUrl);
-
-      if (result.type === 'success') {
+      let callbackUrl: string | null = null;
+      const isCallbackUrl = (url?: string | null): url is string => {
+        if (!url) return false;
+        return (
+          url.startsWith(redirectUrl) ||
+          url.startsWith(nativeRedirectUrl) ||
+          url.includes(`/--/${redirectPath}`)
+        );
+      };
+      const routeToCallback = (url: string) => {
+        callbackUrl = url;
+        console.log('[Kakao Login] Routing callback URL:', url);
         router.replace({
           pathname: '/auth/callback',
-          params: { url: result.url },
+          params: { url },
         });
-      } else if (result.type === 'cancel') {
-        // 사용자가 로그인 취소
-        console.log('사용자가 로그인을 취소했습니다.');
-      } else if (result.type === 'dismiss') {
-        Alert.alert('로그인 중단', '인증 창이 닫혔습니다. 다시 시도해주세요.');
-      } else if (result.type === 'locked') {
-        Alert.alert('로그인 에러', '브라우저가 잠겨있어 로그인을 진행할 수 없습니다.');
-      } else {
-        Alert.alert('로그인 실패', `카카오 로그인이 완료되지 않았습니다. (상태 코드: ${result.type})`);
+      };
+
+      const subscription = Linking.addEventListener('url', ({ url }) => {
+        console.log('[Kakao Login] Linking URL event:', url);
+        if (isCallbackUrl(url)) {
+          routeToCallback(url);
+        }
+      });
+
+      try {
+        // 시스템 브라우저로 카카오 로그인 페이지 열기
+        const result = await WebBrowser.openAuthSessionAsync(data.url, redirectUrl);
+        console.log('[Kakao Login] WebBrowser auth result:', result);
+
+        if (result.type === 'success') {
+          routeToCallback(result.url);
+        } else if (result.type === 'cancel') {
+          // 사용자가 로그인 취소
+          console.log('사용자가 로그인을 취소했습니다.');
+        } else if (result.type === 'dismiss') {
+          await wait(800);
+          const initialUrl = await Linking.getInitialURL();
+          console.log('[Kakao Login] Callback URL from listener:', callbackUrl);
+          console.log('[Kakao Login] Initial URL after dismiss:', initialUrl);
+
+          if (callbackUrl) {
+            console.log('인증 브라우저가 닫혔지만 callback 딥링크를 수신했습니다.');
+          } else if (isCallbackUrl(initialUrl)) {
+            routeToCallback(initialUrl);
+          } else {
+            Alert.alert('로그인 중단', '인증 창이 닫혔습니다. 다시 시도해주세요.');
+          }
+        } else if (result.type === 'locked') {
+          Alert.alert('로그인 에러', '브라우저가 잠겨있어 로그인을 진행할 수 없습니다.');
+        } else {
+          Alert.alert('로그인 실패', `카카오 로그인이 완료되지 않았습니다. (상태 코드: ${result.type})`);
+        }
+      } finally {
+        subscription.remove();
       }
     } catch (error) {
       Alert.alert('에러', error instanceof Error ? error.message : '알 수 없는 오류가 발생했습니다.');
