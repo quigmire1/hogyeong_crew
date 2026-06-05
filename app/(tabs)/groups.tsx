@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
   StyleSheet, View, Text, ScrollView, TouchableOpacity,
-  FlatList, Modal, TextInput, Alert, ActivityIndicator, Share,
+  FlatList, Modal, TextInput, Alert, ActivityIndicator, Share, Image,
 } from 'react-native';
 import { FontAwesome } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -70,6 +70,7 @@ interface GroupHike {
   creator_id: string;
   status: 'planned' | 'completed';
   participants_count: number;
+  is_attending: boolean;
 }
 
 interface JoinGroupResult {
@@ -77,6 +78,12 @@ interface JoinGroupResult {
   group_name: string;
   joined: boolean;
   already_member: boolean;
+}
+
+interface HikeParticipant {
+  user_id: string;
+  display_name: string;
+  avatar_url: string | null;
 }
 
 const formatMeetingAt = (iso: string) => {
@@ -93,6 +100,11 @@ const formatMeetingAt = (iso: string) => {
 const isDuplicateMembershipError = (error: { code?: string; message?: string } | null | undefined) => {
   if (!error) return false;
   return error.code === '23505' || error.message?.toLowerCase().includes('duplicate');
+};
+
+const isMissingTableError = (error: { code?: string; message?: string } | null | undefined) => {
+  if (!error) return false;
+  return error.code === 'PGRST205' || error.message?.toLowerCase().includes('could not find the table');
 };
 
 // ─── Screen ──────────────────────────────────────────────────────────────────
@@ -115,6 +127,16 @@ export default function GroupsScreen() {
   const [createGroupModal, setCreateGroupModal] = useState(false);
   const [joinGroupModal, setJoinGroupModal] = useState(false);
   const [createHikeModal, setCreateHikeModal] = useState(false);
+  const [isCreatingGroup, setIsCreatingGroup] = useState(false);
+  const [isJoiningGroup, setIsJoiningGroup] = useState(false);
+  const [isCreatingHike, setIsCreatingHike] = useState(false);
+  const [attendanceActionHikeId, setAttendanceActionHikeId] = useState<string | null>(null);
+  const [deletingHikeId, setDeletingHikeId] = useState<string | null>(null);
+  const [participantModalVisible, setParticipantModalVisible] = useState(false);
+  const [participantModalHeading, setParticipantModalHeading] = useState('');
+  const [participantModalTitle, setParticipantModalTitle] = useState('');
+  const [participantMembers, setParticipantMembers] = useState<HikeParticipant[]>([]);
+  const [participantLoading, setParticipantLoading] = useState(false);
 
   // Inputs
   const [newGroupName, setNewGroupName] = useState('');
@@ -126,6 +148,15 @@ export default function GroupsScreen() {
   const [isDatePickerVisible, setDatePickerVisibility] = useState(false);
   const [pickerMode, setPickerMode] = useState<'date' | 'time'>('date');
   const [tempDate, setTempDate] = useState<Date | null>(null);
+
+  const currentUserDisplayName = user?.user_metadata?.full_name
+    ?? user?.user_metadata?.name
+    ?? user?.email?.split('@')[0]
+    ?? '크루원';
+
+  const currentUserAvatarUrl = user?.user_metadata?.avatar_url
+    ?? user?.user_metadata?.picture
+    ?? null;
 
   // ─── Data Fetching ──────────────────────────────────────────────────────────
 
@@ -169,13 +200,114 @@ export default function GroupsScreen() {
         .order('meeting_at', { ascending: false }); // 최근 산행부터
       if (error) throw error;
 
-      setHikes(data.map((h: any) => ({
+      const hikeIds = data?.map((h: any) => h.id) ?? [];
+      const { data: myAttendanceRows, error: attendanceError } = user?.id && hikeIds.length > 0
+        ? await supabase
+          .from('group_hike_attendance')
+          .select('hike_id')
+          .eq('user_id', user.id)
+          .in('hike_id', hikeIds)
+        : { data: [], error: null };
+      if (attendanceError) throw attendanceError;
+
+      const attendingHikeIds = new Set((myAttendanceRows ?? []).map((row: any) => row.hike_id));
+      setHikes((data ?? []).map((h: any) => ({
         ...h, participants_count: h.group_hike_attendance[0]?.count ?? 0,
+        is_attending: attendingHikeIds.has(h.id),
       })));
     } catch (e: any) {
       console.error('[Groups]', e.message);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const refreshSelectedGroupHikes = () => {
+    if (selectedGroup) fetchGroupHikes(selectedGroup.id);
+  };
+
+  const resolveMembersFromUserIds = async (userIds: string[]) => {
+    const uniqueUserIds = Array.from(new Set(userIds.filter(Boolean)));
+    const profileMap = new Map<string, { display_name?: string; avatar_url?: string }>();
+
+    if (uniqueUserIds.length > 0) {
+      const { data: profileRows, error: profileError } = await supabase
+        .from('profiles')
+        .select('id, full_name, avatar_url')
+        .in('id', uniqueUserIds);
+
+      if (profileError && !isMissingTableError(profileError)) {
+        console.warn('[Groups] Failed to load member profiles:', profileError.message);
+      }
+
+      (profileRows ?? []).forEach((profile: any) => {
+        profileMap.set(profile.id, {
+          display_name: profile.full_name,
+          avatar_url: profile.avatar_url,
+        });
+      });
+    }
+
+    return uniqueUserIds.map((userId) => {
+      const profile = profileMap.get(userId);
+      const isMe = userId === user?.id;
+
+      return {
+        user_id: userId,
+        display_name: profile?.display_name
+          ?? (isMe ? currentUserDisplayName : '크루원'),
+        avatar_url: profile?.avatar_url
+          ?? (isMe ? currentUserAvatarUrl : null),
+      };
+    });
+  };
+
+  const handleOpenParticipants = async (hike: GroupHike) => {
+    setParticipantModalHeading('참석 멤버');
+    setParticipantModalTitle(hike.title);
+    setParticipantMembers([]);
+    setParticipantModalVisible(true);
+    setParticipantLoading(true);
+
+    try {
+      const { data: attendanceRows, error } = await supabase
+        .from('group_hike_attendance')
+        .select('user_id, created_at')
+        .eq('hike_id', hike.id)
+        .order('created_at', { ascending: true });
+      if (error) throw error;
+
+      const userIds = (attendanceRows ?? []).map((row: any) => row.user_id).filter(Boolean);
+      setParticipantMembers(await resolveMembersFromUserIds(userIds));
+    } catch (e: any) {
+      Alert.alert('오류', e.message ?? '참석자 목록을 불러오지 못했습니다.');
+      setParticipantModalVisible(false);
+    } finally {
+      setParticipantLoading(false);
+    }
+  };
+
+  const handleOpenGroupMembers = async (group: Group) => {
+    setParticipantModalHeading('그룹 멤버');
+    setParticipantModalTitle(group.name);
+    setParticipantMembers([]);
+    setParticipantModalVisible(true);
+    setParticipantLoading(true);
+
+    try {
+      const { data: memberRows, error } = await supabase
+        .from('group_members')
+        .select('user_id')
+        .eq('group_id', group.id);
+      if (error) throw error;
+
+      const userIds = (memberRows ?? []).map((row: any) => row.user_id).filter(Boolean);
+      setParticipantMembers(await resolveMembersFromUserIds(userIds));
+    } catch (e: any) {
+      Alert.alert('오류', e.message ?? '그룹 멤버 목록을 불러오지 못했습니다.');
+      setParticipantModalVisible(false);
+    } finally {
+      setParticipantLoading(false);
     }
   };
 
@@ -196,9 +328,11 @@ export default function GroupsScreen() {
   };
 
   const handleCreateGroup = async () => {
+    if (isCreatingGroup) return;
     if (!newGroupName.trim()) { Alert.alert('알림', '그룹 이름을 입력해주세요.'); return; }
     if (!user?.id) { Alert.alert('로그인 필요', '그룹을 만들려면 로그인이 필요합니다.'); return; }
 
+    setIsCreatingGroup(true);
     try {
       const inviteCode = Crypto.randomUUID().replace(/-/g, '').slice(0, 8).toUpperCase();
       const { data, error } = await supabase
@@ -216,13 +350,19 @@ export default function GroupsScreen() {
       setNewGroupName(''); setNewGroupDesc('');
       fetchGroups();
       Alert.alert('그룹 생성 완료 🎉', `초대 코드: ${inviteCode}\n카카오톡으로 공유해 크루원을 초대하세요!`);
-    } catch (e: any) { Alert.alert('오류', e.message); }
+    } catch (e: any) {
+      Alert.alert('오류', e.message);
+    } finally {
+      setIsCreatingGroup(false);
+    }
   };
 
   const handleJoinGroup = async () => {
+    if (isJoiningGroup) return;
     if (!inviteCodeInput.trim()) { Alert.alert('알림', '초대 코드를 입력해주세요.'); return; }
     if (!user?.id) { Alert.alert('로그인 필요', '그룹에 참여하려면 로그인이 필요합니다.'); return; }
 
+    setIsJoiningGroup(true);
     try {
       const { data, error } = await supabase.rpc('join_group_by_invite_code', {
         p_invite_code: inviteCodeInput.trim().toUpperCase(),
@@ -239,7 +379,11 @@ export default function GroupsScreen() {
         return;
       }
       Alert.alert('참여 완료 🎉', `${result.group_name} 그룹에 참여했습니다!`);
-    } catch (e: any) { Alert.alert('오류', e.message); }
+    } catch (e: any) {
+      Alert.alert('오류', e.message);
+    } finally {
+      setIsJoiningGroup(false);
+    }
   };
 
   const handleInviteViaKakao = async (group: Group) => {
@@ -252,9 +396,11 @@ export default function GroupsScreen() {
   };
 
   const handleCreateHike = async () => {
+    if (isCreatingHike) return;
     if (!newHike.title || !newHike.meeting_at) { Alert.alert('알림', '제목과 일시는 필수입니다.'); return; }
     if (!user?.id) { Alert.alert('로그인 필요', '산행을 등록하려면 로그인이 필요합니다.'); return; }
 
+    setIsCreatingHike(true);
     try {
       const { data, error } = await supabase
         .from('group_hikes')
@@ -270,7 +416,90 @@ export default function GroupsScreen() {
       setCreateHikeModal(false);
       setNewHike({ title: '', mountain_name: '', meeting_at: '', meeting_point: '', description: '' });
       if (selectedGroup) fetchGroupHikes(selectedGroup.id);
-    } catch (e: any) { Alert.alert('오류', e.message); }
+    } catch (e: any) {
+      Alert.alert('오류', e.message);
+    } finally {
+      setIsCreatingHike(false);
+    }
+  };
+
+  const handleAttendHike = async (hike: GroupHike) => {
+    if (attendanceActionHikeId || !user?.id) return;
+
+    setAttendanceActionHikeId(hike.id);
+    try {
+      const { error } = await supabase
+        .from('group_hike_attendance')
+        .insert([{ hike_id: hike.id, user_id: user.id }]);
+      if (error && !isDuplicateMembershipError(error)) throw error;
+      refreshSelectedGroupHikes();
+    } catch (e: any) {
+      Alert.alert('오류', e.message);
+    } finally {
+      setAttendanceActionHikeId(null);
+    }
+  };
+
+  const handleCancelAttendance = async (hike: GroupHike) => {
+    if (attendanceActionHikeId || !user?.id) return;
+
+    setAttendanceActionHikeId(hike.id);
+    try {
+      const { error } = await supabase
+        .from('group_hike_attendance')
+        .delete()
+        .eq('hike_id', hike.id)
+        .eq('user_id', user.id);
+      if (error) throw error;
+      refreshSelectedGroupHikes();
+    } catch (e: any) {
+      Alert.alert('오류', e.message);
+    } finally {
+      setAttendanceActionHikeId(null);
+    }
+  };
+
+  const handleDeleteHike = async (hike: GroupHike) => {
+    if (deletingHikeId || !user?.id) return;
+    if (hike.creator_id !== user.id) {
+      Alert.alert('삭제 불가', '산행 생성자만 일정을 삭제할 수 있습니다.');
+      return;
+    }
+
+    Alert.alert(
+      '산행 일정 삭제',
+      '참석 의사를 표시한 크루원이 있어도 이 일정을 삭제합니다. 계속할까요?',
+      [
+        { text: '취소', style: 'cancel' },
+        {
+          text: '삭제',
+          style: 'destructive',
+          onPress: async () => {
+            setDeletingHikeId(hike.id);
+            try {
+              const { error: attendanceError } = await supabase
+                .from('group_hike_attendance')
+                .delete()
+                .eq('hike_id', hike.id);
+              if (attendanceError) throw attendanceError;
+
+              const { error: hikeError } = await supabase
+                .from('group_hikes')
+                .delete()
+                .eq('id', hike.id)
+                .eq('creator_id', user.id);
+              if (hikeError) throw hikeError;
+
+              setHikes((items) => items.filter((item) => item.id !== hike.id));
+            } catch (e: any) {
+              Alert.alert('오류', e.message);
+            } finally {
+              setDeletingHikeId(null);
+            }
+          },
+        },
+      ],
+    );
   };
 
   // ─── Renders ────────────────────────────────────────────────────────────────
@@ -304,12 +533,23 @@ export default function GroupsScreen() {
   const renderHikeItem = ({ item }: { item: GroupHike }) => {
     const date = new Date(item.meeting_at);
     const isCompleted = item.status === 'completed';
+    const isCreator = item.creator_id === user?.id;
+    const isAttendanceLoading = attendanceActionHikeId === item.id;
+    const isDeleting = deletingHikeId === item.id;
+
     return (
       <View style={[styles.hikeCard, { backgroundColor: isDark ? '#1A1A1A' : '#FFF' }]}>
-        <View style={[styles.hikeBadge, { backgroundColor: isCompleted ? '#E8F5E9' : '#FFF8E1' }]}>
-          <Text style={[styles.hikeBadgeText, { color: isCompleted ? '#2E7D32' : '#F9A825' }]}>
-            {isCompleted ? '✅ 완료된 산행' : '📅 예정된 산행'}
-          </Text>
+        <View style={styles.hikeTopRow}>
+          <View style={[styles.hikeBadge, { backgroundColor: isCompleted ? '#E8F5E9' : '#FFF8E1' }]}>
+            <Text style={[styles.hikeBadgeText, { color: isCompleted ? '#2E7D32' : '#F9A825' }]}>
+              {isCompleted ? '✅ 완료된 산행' : '📅 예정된 산행'}
+            </Text>
+          </View>
+          <View style={[styles.attendanceBadge, { backgroundColor: item.is_attending ? '#E8F8EE' : '#F2F4F6' }]}>
+            <Text style={[styles.attendanceBadgeText, { color: item.is_attending ? '#1DB954' : '#8A949E' }]}>
+              {item.is_attending ? '참석 중' : '미참석'}
+            </Text>
+          </View>
         </View>
 
         <Text style={[styles.hikeTitle, { color: theme.text }]}>{item.title}</Text>
@@ -338,8 +578,53 @@ export default function GroupsScreen() {
         ) : null}
 
         <View style={styles.hikeFooter}>
-          <FontAwesome name="users" size={13} color="#999" />
-          <Text style={styles.participantsText}>{item.participants_count}명 함께</Text>
+          <TouchableOpacity
+            style={styles.participantsRow}
+            onPress={() => handleOpenParticipants(item)}
+            activeOpacity={0.7}
+          >
+            <FontAwesome name="users" size={13} color="#999" />
+            <Text style={styles.participantsText}>{item.participants_count}명 함께</Text>
+            <FontAwesome name="chevron-right" size={10} color="#BBB" />
+          </TouchableOpacity>
+          {!isCompleted && (
+            <View style={styles.hikeActionRow}>
+              {isCreator && (
+                <TouchableOpacity
+                  style={[styles.hikeActionButton, styles.deleteHikeButton, isDeleting && styles.submitBtnDisabled]}
+                  onPress={() => handleDeleteHike(item)}
+                  disabled={isDeleting || Boolean(attendanceActionHikeId)}
+                >
+                  {isDeleting
+                    ? <ActivityIndicator size="small" color="#FF4B4B" />
+                    : <>
+                      <FontAwesome name="trash-o" size={13} color="#FF4B4B" />
+                      <Text style={styles.deleteHikeButtonText}>삭제</Text>
+                    </>
+                  }
+                </TouchableOpacity>
+              )}
+              <TouchableOpacity
+                style={[
+                  styles.hikeActionButton,
+                  item.is_attending ? styles.cancelAttendanceButton : styles.attendButton,
+                  isAttendanceLoading && styles.submitBtnDisabled,
+                ]}
+                onPress={() => item.is_attending ? handleCancelAttendance(item) : handleAttendHike(item)}
+                disabled={isAttendanceLoading || Boolean(deletingHikeId)}
+              >
+                {isAttendanceLoading
+                  ? <ActivityIndicator size="small" color={item.is_attending ? '#666' : '#FFF'} />
+                  : <>
+                    <FontAwesome name={item.is_attending ? 'times' : 'check'} size={13} color={item.is_attending ? '#666' : '#FFF'} />
+                    <Text style={item.is_attending ? styles.cancelAttendanceButtonText : styles.attendButtonText}>
+                      {item.is_attending ? '참석 취소' : '참석'}
+                    </Text>
+                  </>
+                }
+              </TouchableOpacity>
+            </View>
+          )}
         </View>
       </View>
     );
@@ -351,10 +636,20 @@ export default function GroupsScreen() {
     return (
       <View style={[styles.container, { backgroundColor: isDark ? '#000' : '#F8F9FA' }]}>
         <LinearGradient colors={['#1DB954', '#0a8a3e']} style={styles.header}>
-          <TouchableOpacity onPress={handleBack} style={styles.backBtn}>
-            <FontAwesome name="chevron-left" size={16} color="#FFF" />
-            <Text style={styles.backBtnText}>그룹</Text>
-          </TouchableOpacity>
+          <View style={styles.hikeHeaderTopRow}>
+            <TouchableOpacity onPress={handleBack} style={styles.backBtn}>
+              <FontAwesome name="chevron-left" size={16} color="#FFF" />
+              <Text style={styles.backBtnText}>그룹</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.groupMemberPill}
+              onPress={() => handleOpenGroupMembers(selectedGroup)}
+              activeOpacity={0.75}
+            >
+              <FontAwesome name="users" size={12} color="#1DB954" />
+              <Text style={styles.groupMemberPillText}>{selectedGroup.member_count}명</Text>
+            </TouchableOpacity>
+          </View>
           <Text style={styles.headerTitle}>{selectedGroup.name}</Text>
           <Text style={styles.headerSub}>산행 기록 · 최근 순</Text>
           <TouchableOpacity style={styles.addBtn} onPress={() => setCreateHikeModal(true)}>
@@ -388,7 +683,7 @@ export default function GroupsScreen() {
             <View style={[styles.modalBox, { backgroundColor: isDark ? '#1A1A1A' : '#FFF' }]}>
               <View style={styles.modalHead}>
                 <Text style={[styles.modalTitle, { color: theme.text }]}>새 산행 등록</Text>
-                <TouchableOpacity onPress={() => setCreateHikeModal(false)}>
+                <TouchableOpacity onPress={() => setCreateHikeModal(false)} disabled={isCreatingHike}>
                   <FontAwesome name="times" size={22} color={theme.text} />
                 </TouchableOpacity>
               </View>
@@ -433,10 +728,63 @@ export default function GroupsScreen() {
                 />
                 <StyledInput placeholder="집결 장소" value={newHike.meeting_point} onChangeText={(t: string) => setNewHike({ ...newHike, meeting_point: t })} />
                 <StyledInput placeholder="상세 설명" multiline value={newHike.description} onChangeText={(t: string) => setNewHike({ ...newHike, description: t })} />
-                <TouchableOpacity style={[styles.submitBtn, { backgroundColor: theme.tint }]} onPress={handleCreateHike}>
-                  <Text style={styles.submitBtnText}>등록하기</Text>
+                <TouchableOpacity
+                  style={[styles.submitBtn, { backgroundColor: theme.tint }, isCreatingHike && styles.submitBtnDisabled]}
+                  onPress={handleCreateHike}
+                  disabled={isCreatingHike}
+                >
+                  {isCreatingHike
+                    ? <ActivityIndicator size="small" color="#FFF" />
+                    : <Text style={styles.submitBtnText}>등록하기</Text>
+                  }
                 </TouchableOpacity>
               </ScrollView>
+            </View>
+          </View>
+        </Modal>
+
+        {/* 참석자 목록 모달 */}
+        <Modal visible={participantModalVisible} animationType="fade" transparent>
+          <View style={styles.overlay}>
+            <View style={[styles.participantModalBox, { backgroundColor: isDark ? '#1A1A1A' : '#FFF' }]}>
+              <View style={styles.modalHead}>
+                <View style={styles.participantTitleBox}>
+                  <Text style={[styles.modalTitle, { color: theme.text }]}>{participantModalHeading}</Text>
+                  <Text style={styles.participantSubtitle} numberOfLines={1}>{participantModalTitle}</Text>
+                </View>
+                <TouchableOpacity onPress={() => setParticipantModalVisible(false)}>
+                  <FontAwesome name="times" size={22} color={theme.text} />
+                </TouchableOpacity>
+              </View>
+
+              {participantLoading ? (
+                <View style={styles.participantLoadingBox}>
+                  <ActivityIndicator size="small" color={theme.tint} />
+                </View>
+              ) : participantMembers.length === 0 ? (
+                <View style={styles.participantEmptyBox}>
+                  <Text style={styles.participantEmptyText}>
+                    {participantModalHeading === '그룹 멤버' ? '그룹 멤버가 없어요.' : '아직 참석 멤버가 없어요.'}
+                  </Text>
+                </View>
+              ) : (
+                <ScrollView style={styles.participantList} contentContainerStyle={styles.participantListContent}>
+                  {participantMembers.map((member) => (
+                    <View key={member.user_id} style={styles.participantItem}>
+                      {member.avatar_url ? (
+                        <Image source={{ uri: member.avatar_url }} style={styles.participantAvatar} />
+                      ) : (
+                        <View style={styles.participantAvatarFallback}>
+                          <FontAwesome name="user" size={14} color="#8A96A3" />
+                        </View>
+                      )}
+                      <Text style={[styles.participantName, { color: theme.text }]} numberOfLines={1}>
+                        {member.display_name}
+                      </Text>
+                    </View>
+                  ))}
+                </ScrollView>
+              )}
             </View>
           </View>
         </Modal>
@@ -470,9 +818,22 @@ export default function GroupsScreen() {
           <Text style={styles.emptyEmoji}>👥</Text>
           <Text style={styles.emptyTitle}>소속된 그룹이 없어요</Text>
           <Text style={styles.emptyDesc}>새 그룹을 만들거나 초대 코드로 참여해보세요!</Text>
-          <TouchableOpacity style={[styles.submitBtn, { backgroundColor: theme.tint, paddingHorizontal: 30, marginTop: 20 }]} onPress={() => setCreateGroupModal(true)}>
-            <Text style={styles.submitBtnText}>그룹 만들기</Text>
-          </TouchableOpacity>
+          <View style={styles.emptyActions}>
+            <TouchableOpacity
+              style={[styles.emptyActionBtn, { backgroundColor: '#FEE500' }]}
+              onPress={() => setJoinGroupModal(true)}
+            >
+              <FontAwesome name="sign-in" size={13} color="#3B1D1D" />
+              <Text style={[styles.emptyActionText, { color: '#3B1D1D' }]}>코드로 참여</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.emptyActionBtn, { backgroundColor: theme.tint }]}
+              onPress={() => setCreateGroupModal(true)}
+            >
+              <FontAwesome name="plus" size={13} color="#FFF" />
+              <Text style={styles.emptyActionText}>그룹 만들기</Text>
+            </TouchableOpacity>
+          </View>
         </View>
       ) : (
         <FlatList
@@ -491,7 +852,7 @@ export default function GroupsScreen() {
           <View style={[styles.modalBox, { backgroundColor: isDark ? '#1A1A1A' : '#FFF' }]}>
             <View style={styles.modalHead}>
               <Text style={[styles.modalTitle, { color: theme.text }]}>새 그룹 만들기</Text>
-              <TouchableOpacity onPress={() => setCreateGroupModal(false)}>
+              <TouchableOpacity onPress={() => setCreateGroupModal(false)} disabled={isCreatingGroup}>
                 <FontAwesome name="times" size={22} color={theme.text} />
               </TouchableOpacity>
             </View>
@@ -511,8 +872,15 @@ export default function GroupsScreen() {
               textColor={theme.text as string}
             />
             <Text style={styles.hint}>그룹 생성 후 초대 코드를 카카오톡으로 공유하면 크루원들이 참여할 수 있어요.</Text>
-            <TouchableOpacity style={[styles.submitBtn, { backgroundColor: theme.tint }]} onPress={handleCreateGroup}>
-              <Text style={styles.submitBtnText}>만들기</Text>
+            <TouchableOpacity
+              style={[styles.submitBtn, { backgroundColor: theme.tint }, isCreatingGroup && styles.submitBtnDisabled]}
+              onPress={handleCreateGroup}
+              disabled={isCreatingGroup}
+            >
+              {isCreatingGroup
+                ? <ActivityIndicator size="small" color="#FFF" />
+                : <Text style={styles.submitBtnText}>만들기</Text>
+              }
             </TouchableOpacity>
           </View>
         </View>
@@ -524,7 +892,7 @@ export default function GroupsScreen() {
           <View style={[styles.modalBox, { backgroundColor: isDark ? '#1A1A1A' : '#FFF' }]}>
             <View style={styles.modalHead}>
               <Text style={[styles.modalTitle, { color: theme.text }]}>그룹 참여하기</Text>
-              <TouchableOpacity onPress={() => setJoinGroupModal(false)}>
+              <TouchableOpacity onPress={() => setJoinGroupModal(false)} disabled={isJoiningGroup}>
                 <FontAwesome name="times" size={22} color={theme.text} />
               </TouchableOpacity>
             </View>
@@ -538,8 +906,15 @@ export default function GroupsScreen() {
               autoCapitalize="characters"
               maxLength={8}
             />
-            <TouchableOpacity style={[styles.submitBtn, { backgroundColor: '#FEE500' }]} onPress={handleJoinGroup}>
-              <Text style={[styles.submitBtnText, { color: '#3B1D1D' }]}>💬 참여하기</Text>
+            <TouchableOpacity
+              style={[styles.submitBtn, { backgroundColor: '#FEE500' }, isJoiningGroup && styles.submitBtnDisabled]}
+              onPress={handleJoinGroup}
+              disabled={isJoiningGroup}
+            >
+              {isJoiningGroup
+                ? <ActivityIndicator size="small" color="#3B1D1D" />
+                : <Text style={[styles.submitBtnText, { color: '#3B1D1D' }]}>💬 참여하기</Text>
+              }
             </TouchableOpacity>
           </View>
         </View>
@@ -553,19 +928,25 @@ export default function GroupsScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1 },
   header: { paddingTop: 55, paddingBottom: 22, paddingHorizontal: 22, borderBottomLeftRadius: 30, borderBottomRightRadius: 30 },
-  backBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 8 },
+  hikeHeaderTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 8 },
+  backBtn: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   backBtnText: { color: 'rgba(255,255,255,0.85)', fontSize: 14, fontWeight: '600' },
   headerTitle: { fontSize: 26, fontWeight: '900', color: '#FFF' },
   headerSub: { fontSize: 14, color: 'rgba(255,255,255,0.75)', marginTop: 3, marginBottom: 14 },
   headerActions: { flexDirection: 'row', gap: 10 },
   addBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#FFF', paddingHorizontal: 14, paddingVertical: 9, borderRadius: 20 },
   addBtnText: { color: '#1DB954', fontWeight: '700', fontSize: 13 },
+  groupMemberPill: { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: '#FFF', paddingHorizontal: 12, paddingVertical: 7, borderRadius: 16 },
+  groupMemberPillText: { color: '#1DB954', fontSize: 12, fontWeight: '800' },
   listPad: { padding: 18, paddingTop: 14 },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   empty: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 40 },
   emptyEmoji: { fontSize: 56, marginBottom: 16 },
   emptyTitle: { fontSize: 18, fontWeight: '800', color: '#333', marginBottom: 8 },
   emptyDesc: { fontSize: 14, color: '#999', textAlign: 'center', lineHeight: 20 },
+  emptyActions: { flexDirection: 'row', gap: 10, marginTop: 20 },
+  emptyActionBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingHorizontal: 18, paddingVertical: 12, borderRadius: 18 },
+  emptyActionText: { color: '#FFF', fontSize: 13, fontWeight: '800' },
 
   // Group Card
   groupCard: { flexDirection: 'row', alignItems: 'center', borderRadius: 20, padding: 16, marginBottom: 12, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.07, shadowRadius: 8, elevation: 3 },
@@ -581,8 +962,11 @@ const styles = StyleSheet.create({
 
   // Hike Card
   hikeCard: { borderRadius: 20, padding: 18, marginBottom: 14, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.07, shadowRadius: 8, elevation: 3 },
-  hikeBadge: { alignSelf: 'flex-start', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10, marginBottom: 10 },
+  hikeTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 10 },
+  hikeBadge: { alignSelf: 'flex-start', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10 },
   hikeBadgeText: { fontSize: 12, fontWeight: '700' },
+  attendanceBadge: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10 },
+  attendanceBadgeText: { fontSize: 12, fontWeight: '800' },
   hikeTitle: { fontSize: 18, fontWeight: '800', marginBottom: 4 },
   hikeMountain: { fontSize: 14, color: '#1DB954', fontWeight: '600', marginBottom: 10 },
   hikeMetaCol: { gap: 5, marginBottom: 8 },
@@ -591,17 +975,46 @@ const styles = StyleSheet.create({
   summaryBox: { backgroundColor: '#F0FAF4', padding: 12, borderRadius: 12, borderLeftWidth: 4, borderLeftColor: '#1DB954', marginTop: 8 },
   summaryLabel: { fontSize: 12, fontWeight: '700', color: '#1DB954', marginBottom: 4 },
   summaryText: { fontSize: 13, lineHeight: 20 },
-  hikeFooter: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 12, paddingTop: 12, borderTopWidth: 1, borderTopColor: '#F0F0F0' },
+  hikeFooter: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginTop: 12, paddingTop: 12, borderTopWidth: 1, borderTopColor: '#F0F0F0' },
+  participantsRow: { flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 },
   participantsText: { fontSize: 13, color: '#999' },
+  hikeActionRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  hikeActionButton: { minHeight: 34, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 14 },
+  attendButton: { backgroundColor: '#1DB954' },
+  attendButtonText: { color: '#FFF', fontSize: 13, fontWeight: '800' },
+  cancelAttendanceButton: { backgroundColor: '#F2F4F6' },
+  cancelAttendanceButtonText: { color: '#666', fontSize: 13, fontWeight: '800' },
+  deleteHikeButton: { backgroundColor: '#FFF2F2', borderWidth: 1, borderColor: '#FFD6D6' },
+  deleteHikeButtonText: { color: '#FF4B4B', fontSize: 13, fontWeight: '800' },
 
   // Modals
   overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', padding: 20 },
   modalBox: { borderRadius: 25, padding: 24 },
   modalHead: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },
   modalTitle: { fontSize: 18, fontWeight: '800' },
+  participantModalBox: { borderRadius: 22, padding: 22, maxHeight: '70%' },
+  participantTitleBox: { flex: 1, paddingRight: 14 },
+  participantSubtitle: { fontSize: 12, color: '#999', marginTop: 3 },
+  participantLoadingBox: { minHeight: 120, justifyContent: 'center', alignItems: 'center' },
+  participantEmptyBox: { minHeight: 100, justifyContent: 'center', alignItems: 'center' },
+  participantEmptyText: { fontSize: 14, color: '#999' },
+  participantList: { maxHeight: 320 },
+  participantListContent: { gap: 10 },
+  participantItem: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 8 },
+  participantAvatar: { width: 34, height: 34, borderRadius: 17, backgroundColor: '#E9EEF2' },
+  participantAvatarFallback: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: '#E9EEF2',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  participantName: { flex: 1, fontSize: 15, fontWeight: '700' },
   input: { borderWidth: 1, borderRadius: 12, padding: 13, marginBottom: 12, fontSize: 15 },
   codeInput: { textAlign: 'center', letterSpacing: 4, fontSize: 20, fontWeight: '800' },
   hint: { fontSize: 12, color: '#999', marginBottom: 14, lineHeight: 18 },
   submitBtn: { padding: 15, borderRadius: 14, alignItems: 'center', marginTop: 4 },
+  submitBtnDisabled: { opacity: 0.65 },
   submitBtnText: { color: '#FFF', fontWeight: '800', fontSize: 15 },
 });

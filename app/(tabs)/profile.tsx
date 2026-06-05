@@ -1,18 +1,81 @@
 import { FontAwesome } from '@expo/vector-icons';
+import { useFocusEffect } from '@react-navigation/native';
 import * as ImagePicker from 'expo-image-picker';
 import { LinearGradient } from 'expo-linear-gradient';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, Image, Modal, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { useAuth } from '../../contexts/AuthContext';
+import { getAllSessions, getLocationsBySession, getPhotosBySession, LocationRecord } from '../../utils/database';
+import { calculateElevationGain } from '../../utils/elevation';
 import { supabase, SUPABASE_STORAGE_BUCKETS } from '../../utils/supabase';
 import { getWeatherFairyResult, WeatherFairyResult } from '../../utils/weatherFairy';
+
+type ProfileStats = {
+  sessionCount: number;
+  elevationGain: number;
+  distanceKm: number;
+};
+
+type RecentPhoto = {
+  id: string;
+  uri: string;
+};
+
+const DEFAULT_PROFILE_STATS: ProfileStats = {
+  sessionCount: 0,
+  elevationGain: 0,
+  distanceKm: 0,
+};
+
+const calculateDistanceKm = (locations: LocationRecord[]): number => {
+  if (locations.length < 2) return 0;
+
+  const earthRadiusKm = 6371;
+
+  return locations.reduce((acc, current, index) => {
+    if (index === 0) return 0;
+
+    const previous = locations[index - 1];
+    const dLat = ((current.latitude - previous.latitude) * Math.PI) / 180;
+    const dLon = ((current.longitude - previous.longitude) * Math.PI) / 180;
+    const previousLat = (previous.latitude * Math.PI) / 180;
+    const currentLat = (current.latitude * Math.PI) / 180;
+    const a =
+      Math.sin(dLat / 2) ** 2 +
+      Math.cos(previousLat) * Math.cos(currentLat) * Math.sin(dLon / 2) ** 2;
+
+    return acc + earthRadiusKm * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  }, 0);
+};
+
+const formatElevation = (meters: number) => `${Math.floor(meters).toLocaleString('ko-KR')}m`;
+
+const formatDistance = (distanceKm: number) => {
+  if (distanceKm >= 100) {
+    return `${Math.round(distanceKm).toLocaleString('ko-KR')}km`;
+  }
+
+  return `${distanceKm.toFixed(1)}km`;
+};
+
+const getLevelLabel = (stats: ProfileStats) => {
+  if (stats.sessionCount >= 30) return 'Lv.15 전문 등산객';
+  if (stats.sessionCount >= 15) return 'Lv.10 꾸준한 등산객';
+  if (stats.sessionCount >= 5) return 'Lv.5 산행 루틴러';
+  if (stats.sessionCount >= 1) return 'Lv.2 새싹 등산객';
+  return 'Lv.1 첫 산행 준비 중';
+};
 
 export default function ProfileScreen() {
   const { user, signOut, refreshUser } = useAuth();
   const [fairy, setFairy] = useState<WeatherFairyResult | null>(null);
   const [fairyLoading, setFairyLoading] = useState(true);
+  const [profileStats, setProfileStats] = useState<ProfileStats>(DEFAULT_PROFILE_STATS);
+  const [recentPhotos, setRecentPhotos] = useState<RecentPhoto[]>([]);
+  const [profileStatsLoading, setProfileStatsLoading] = useState(true);
   const [avatarUri, setAvatarUri] = useState<string | null>(null);
   const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
+  const [isSigningOut, setIsSigningOut] = useState(false);
   const [editModalVisible, setEditModalVisible] = useState(false);
   const [newDisplayName, setNewDisplayName] = useState('');
   const [isSavingName, setIsSavingName] = useState(false);
@@ -37,17 +100,86 @@ export default function ProfileScreen() {
     ?? `https://i.pravatar.cc/150?u=${user?.id}`;
 
   const provider = user?.app_metadata?.provider ?? 'email';
+  const levelLabel = getLevelLabel(profileStats);
+
+  useFocusEffect(
+    useCallback(() => {
+      let isActive = true;
+
+      const loadProfileStats = async () => {
+        setProfileStatsLoading(true);
+
+        try {
+          const sessions = await getAllSessions();
+          const completedSessions = sessions.filter((session) => session.ended_at > 0);
+          const sessionDetails = await Promise.all(
+            completedSessions.map(async (session) => {
+              const [locations, photos] = await Promise.all([
+                getLocationsBySession(session.id),
+                getPhotosBySession(session.id),
+              ]);
+
+              return { locations, photos };
+            }),
+          );
+
+          if (!isActive) return;
+
+          const elevationGain = sessionDetails.reduce(
+            (sum, detail) => sum + calculateElevationGain(detail.locations),
+            0,
+          );
+          const distanceKm = sessionDetails.reduce(
+            (sum, detail) => sum + calculateDistanceKm(detail.locations),
+            0,
+          );
+          const photos = sessionDetails
+            .flatMap((detail) => detail.photos)
+            .sort((a, b) => b.timestamp - a.timestamp)
+            .slice(0, 3)
+            .map((photo) => ({
+              id: String(photo.id ?? `${photo.session_id}-${photo.timestamp}`),
+              uri: photo.public_url ?? photo.local_uri,
+            }));
+
+          setProfileStats({
+            sessionCount: completedSessions.length,
+            elevationGain,
+            distanceKm,
+          });
+          setRecentPhotos(photos);
+        } catch (error) {
+          console.error('[Profile] Failed to load local profile stats:', error);
+        } finally {
+          if (isActive) setProfileStatsLoading(false);
+        }
+      };
+
+      loadProfileStats();
+
+      return () => {
+        isActive = false;
+      };
+    }, []),
+  );
 
   const handleSignOut = () => {
+    if (isSigningOut) return;
+
     Alert.alert('로그아웃', '정말 로그아웃 하시겠어요?', [
       { text: '취소', style: 'cancel' },
       {
         text: '로그아웃',
         style: 'destructive',
         onPress: async () => {
-          const { error } = await signOut();
-          if (error) {
-            Alert.alert('로그아웃 실패', error.message);
+          setIsSigningOut(true);
+          try {
+            const { error } = await signOut();
+            if (error) {
+              Alert.alert('로그아웃 실패', error.message);
+            }
+          } finally {
+            setIsSigningOut(false);
           }
         },
       },
@@ -156,7 +288,7 @@ export default function ProfileScreen() {
           </TouchableOpacity>
 
           <Text style={styles.name}>{displayName}</Text>
-          <Text style={styles.level}>Lv.15 전문 등산객</Text>
+          <Text style={styles.level}>{levelLabel}</Text>
           {user?.email && (
             <Text style={styles.email}>{user.email}</Text>
           )}
@@ -171,9 +303,16 @@ export default function ProfileScreen() {
             >
               <Text style={styles.editButtonText}>프로필 수정</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.logoutButton} onPress={handleSignOut}>
-              <FontAwesome name="sign-out" size={14} color="#FF4B4B" />
-              <Text style={styles.logoutButtonText}>로그아웃</Text>
+            <TouchableOpacity
+              style={[styles.logoutButton, isSigningOut && styles.actionButtonDisabled]}
+              onPress={handleSignOut}
+              disabled={isSigningOut}
+            >
+              {isSigningOut
+                ? <ActivityIndicator size="small" color="#FF4B4B" />
+                : <FontAwesome name="sign-out" size={14} color="#FF4B4B" />
+              }
+              <Text style={styles.logoutButtonText}>{isSigningOut ? '로그아웃 중' : '로그아웃'}</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -181,17 +320,23 @@ export default function ProfileScreen() {
         <View style={styles.statsContainer}>
           <View style={styles.statBox}>
             <FontAwesome name="flag-checkered" size={24} color="#FF6B6B" />
-            <Text style={styles.statValue}>32</Text>
+            <Text style={styles.statValue}>
+              {profileStatsLoading ? '...' : profileStats.sessionCount.toLocaleString('ko-KR')}
+            </Text>
             <Text style={styles.statLabel}>총 등반 횟수</Text>
           </View>
           <View style={styles.statBox}>
             <FontAwesome name="arrow-up" size={24} color="#2ECC71" />
-            <Text style={styles.statValue}>12,500m</Text>
+            <Text style={styles.statValue}>
+              {profileStatsLoading ? '...' : formatElevation(profileStats.elevationGain)}
+            </Text>
             <Text style={styles.statLabel}>누적 고도</Text>
           </View>
           <View style={styles.statBox}>
             <FontAwesome name="map-o" size={24} color="#3498DB" />
-            <Text style={styles.statValue}>145km</Text>
+            <Text style={styles.statValue}>
+              {profileStatsLoading ? '...' : formatDistance(profileStats.distanceKm)}
+            </Text>
             <Text style={styles.statLabel}>누적 거리</Text>
           </View>
         </View>
@@ -356,13 +501,20 @@ export default function ProfileScreen() {
             </TouchableOpacity>
           </View>
           <View style={styles.photoGrid}>
-            {[
-              'https://images.unsplash.com/photo-1551632811-561732d1e306?w=400',
-              'https://images.unsplash.com/photo-1519904981063-b0cf448d479e?w=400',
-              'https://images.unsplash.com/photo-1605206675545-e6552a926d52?w=400',
-            ].map((uri, index) => (
-              <Image key={index} source={{ uri }} style={styles.gridImage} />
-            ))}
+            {profileStatsLoading ? (
+              <View style={styles.photoEmptyState}>
+                <ActivityIndicator color="#1DB954" />
+              </View>
+            ) : recentPhotos.length > 0 ? (
+              recentPhotos.map((photo) => (
+                <Image key={photo.id} source={{ uri: photo.uri }} style={styles.gridImage} />
+              ))
+            ) : (
+              <View style={styles.photoEmptyState}>
+                <FontAwesome name="camera" size={22} color="#B8C2CC" />
+                <Text style={styles.photoEmptyText}>아직 산행 사진이 없습니다.</Text>
+              </View>
+            )}
           </View>
         </View>
       </ScrollView>
@@ -375,9 +527,16 @@ export default function ProfileScreen() {
 
             <View style={styles.modalAvatarRow}>
               <Image source={{ uri: avatarUrl }} style={styles.modalAvatar} />
-              <TouchableOpacity style={styles.modalAvatarEdit} onPress={handlePickAvatar}>
-                <FontAwesome name="camera" size={14} color="#FFF" />
-                <Text style={styles.modalAvatarEditText}>사진 변경</Text>
+              <TouchableOpacity
+                style={[styles.modalAvatarEdit, isUploadingAvatar && styles.actionButtonDisabled]}
+                onPress={handlePickAvatar}
+                disabled={isUploadingAvatar}
+              >
+                {isUploadingAvatar
+                  ? <ActivityIndicator size="small" color="#FFF" />
+                  : <FontAwesome name="camera" size={14} color="#FFF" />
+                }
+                <Text style={styles.modalAvatarEditText}>{isUploadingAvatar ? '업로드 중' : '사진 변경'}</Text>
               </TouchableOpacity>
             </View>
 
@@ -522,6 +681,9 @@ const styles = StyleSheet.create({
     color: '#FF4B4B',
     fontSize: 14,
   },
+  actionButtonDisabled: {
+    opacity: 0.65,
+  },
   statsContainer: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -609,6 +771,23 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     paddingHorizontal: 20,
     justifyContent: 'space-between',
+  },
+  photoEmptyState: {
+    width: '100%',
+    minHeight: 108,
+    borderRadius: 12,
+    backgroundColor: '#FFF',
+    borderWidth: 1,
+    borderColor: '#E8EDF2',
+    borderStyle: 'dashed',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  photoEmptyText: {
+    fontSize: 13,
+    color: '#8792A0',
+    fontWeight: '600',
   },
   gridImage: {
     width: '31%',

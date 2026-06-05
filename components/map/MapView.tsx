@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef } from 'react';
+import React, { useMemo } from 'react';
 import { Image, StyleSheet, View, Platform } from 'react-native';
 
 let NativeMapView: any = View;
@@ -40,29 +40,18 @@ interface MapViewProps {
 
 
 export default function MapView({ currentLocation, routeCoordinates = [], photos = [] }: MapViewProps) {
-  const mapRef = useRef<any>(null);
-
   const currentRegion = useMemo(() => ({
     latitude: currentLocation?.latitude || 37.5665,
     longitude: currentLocation?.longitude || 126.9780,
-    latitudeDelta: 0.0922,
-    longitudeDelta: 0.0421,
+    latitudeDelta: 0.0102,
+    longitudeDelta: 0.0047,
   }), [currentLocation?.latitude, currentLocation?.longitude]);
 
   const shouldRenderVWorldTiles = Platform.OS !== 'web' && Boolean(process.env.EXPO_PUBLIC_VWORLD_API_KEY);
 
-  useEffect(() => {
-    if (!currentLocation || Platform.OS === 'web') {
-      return;
-    }
-
-    mapRef.current?.animateToRegion?.(currentRegion, 500);
-  }, [currentLocation, currentRegion]);
-
   return (
     <View style={styles.container}>
       <NativeMapView
-        ref={mapRef}
         style={styles.map}
         provider={PROVIDER_GOOGLE}
         mapType="standard"
@@ -76,13 +65,6 @@ export default function MapView({ currentLocation, routeCoordinates = [], photos
             zIndex={1}
             opacity={0.8}
             tileSize={256}
-          />
-        )}
-        {currentLocation && routeCoordinates.length === 0 && (
-          <Marker
-            coordinate={currentLocation}
-            title="현재 위치"
-            description="등산 대기 중"
           />
         )}
 

@@ -159,8 +159,7 @@ const SessionCard = React.memo(({ data, isDark, theme, onReturnToTracker }: {
           </View>
         </View>
         <View style={styles.sessionQuickStats}>
-          <Text style={[styles.sessionQuickStat, { color: theme.tint }]}>{distanceKm.toFixed(1)}km</Text>
-          <Text style={styles.sessionQuickDivider}>·</Text>
+          <FontAwesome name="clock-o" size={12} color={theme.tint} />
           <Text style={[styles.sessionQuickStat, { color: theme.tint }]}>{formatDuration(durationMs)}</Text>
           <FontAwesome name={expanded ? 'chevron-up' : 'chevron-down'} size={12} color="#CCC" style={{ marginLeft: 6 }} />
         </View>
@@ -375,7 +374,6 @@ const styles = StyleSheet.create({
   sessionTime: { fontSize: 12, color: '#999', marginTop: 2 },
   sessionQuickStats: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   sessionQuickStat: { fontSize: 13, fontWeight: '700' },
-  sessionQuickDivider: { color: '#CCC', fontSize: 13 },
   activeSessionBanner: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#EAF8EF', paddingHorizontal: 14, paddingVertical: 12, gap: 12 },
   activeSessionLabel: { color: '#1DB954', fontSize: 12, fontWeight: '800', marginBottom: 2 },
   activeSessionText: { color: '#2D6A3F', fontSize: 12 },

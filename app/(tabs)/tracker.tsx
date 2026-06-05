@@ -9,8 +9,8 @@ import MapView, { Coordinate } from '../../components/map/MapView';
 import { Colors } from '../../constants/theme';
 import { useColorScheme } from '../../hooks/use-color-scheme';
 import { getCurrentSessionId, isLocationTaskRunning, setCurrentSessionId, startLocationTask, stopLocationTask } from '../../tasks/locationTask';
-import { getAllLocations, getAllPhotos, insertLocation, insertPhoto, PhotoRecord, createSession, endSession, getLocationsBySession, getPhotosBySession, getAllSessions } from '../../utils/database';
-import { calculateFloors } from '../../utils/elevation';
+import { insertLocation, insertPhoto, PhotoRecord, createSession, endSession, getLocationsBySession, getPhotosBySession, getAllSessions } from '../../utils/database';
+import { calculateElevationGain } from '../../utils/elevation';
 import { syncHikeBackupToCloud } from '../../utils/sync';
 import { WeatherBadge } from '../../components/WeatherBadge';
 import { fetchWeather, evaluateHikingSafety } from '../../utils/weather';
@@ -18,6 +18,28 @@ import { saveHikeSession } from '../../utils/weatherFairy';
 import { useAuth } from '../../contexts/AuthContext';
 
 const isIosExpoGo = Platform.OS === 'ios' && Constants.appOwnership === 'expo';
+
+const formatElapsedTime = (totalSeconds: number) => {
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  return [hours, minutes, seconds]
+    .map((value) => String(value).padStart(2, '0'))
+    .join(':');
+};
+
+const loadSessionSummary = async (sessionId: string) => {
+  const [locationRecords, photoRecords] = await Promise.all([
+    getLocationsBySession(sessionId),
+    getPhotosBySession(sessionId),
+  ]);
+
+  return {
+    elevationGain: calculateElevationGain(locationRecords),
+    photoCount: photoRecords.length,
+  };
+};
 
 export default function TrackerScreen() {
   const colorScheme = useColorScheme();
@@ -31,6 +53,7 @@ export default function TrackerScreen() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [isSyncing, setIsSyncing] = useState(false);
   const [isTrackingAction, setIsTrackingAction] = useState(false);
+  const [startCountdown, setStartCountdown] = useState<number | null>(null);
   const currentSessionIdRef = useRef<string>('');
   
   // 등산 트래킹 상태
@@ -38,25 +61,31 @@ export default function TrackerScreen() {
   const [routeCoordinates, setRouteCoordinates] = useState<Coordinate[]>([]);
   const [photos, setPhotos] = useState<PhotoRecord[]>([]);
   const [elevationGain, setElevationGain] = useState(0);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const elapsedIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const countdownTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const countdownRunRef = useRef(0);
   const foregroundLocationSubRef = useRef<Location.LocationSubscription | null>(null);
 
   const loadRouteFromDB = useCallback(async (sessionIdOverride?: string) => {
     try {
       const sessionId = sessionIdOverride ?? currentSessionIdRef.current;
-      const records = sessionId
-        ? await getLocationsBySession(sessionId)
-        : await getAllLocations();
+      if (!sessionId) {
+        setRouteCoordinates([]);
+        setPhotos([]);
+        setElevationGain(0);
+        return;
+      }
+
+      const records = await getLocationsBySession(sessionId);
       const coords = records.map(r => ({ latitude: r.latitude, longitude: r.longitude }));
       setRouteCoordinates(coords);
       
-      const { calculateElevationGain } = await import('../../utils/elevation');
       const gain = calculateElevationGain(records);
       setElevationGain(gain);
 
-      const photoRecords = sessionId
-        ? await getPhotosBySession(sessionId)
-        : await getAllPhotos();
+      const photoRecords = await getPhotosBySession(sessionId);
       setPhotos(photoRecords);
 
       if (records.length > 0) {
@@ -85,9 +114,42 @@ export default function TrackerScreen() {
     }
   };
 
+  const updateElapsedTime = useCallback(() => {
+    if (!sessionStartRef.current) {
+      setElapsedSeconds(0);
+      return;
+    }
+
+    const startedAt = new Date(sessionStartRef.current).getTime();
+    setElapsedSeconds(Math.max(0, Math.floor((Date.now() - startedAt) / 1000)));
+  }, []);
+
+  const startElapsedTimer = useCallback(() => {
+    if (elapsedIntervalRef.current) {
+      clearInterval(elapsedIntervalRef.current);
+    }
+
+    updateElapsedTime();
+    elapsedIntervalRef.current = setInterval(updateElapsedTime, 1000);
+  }, [updateElapsedTime]);
+
+  const stopElapsedTimer = () => {
+    if (elapsedIntervalRef.current) {
+      clearInterval(elapsedIntervalRef.current);
+      elapsedIntervalRef.current = null;
+    }
+  };
+
   const stopForegroundTracking = () => {
     foregroundLocationSubRef.current?.remove();
     foregroundLocationSubRef.current = null;
+  };
+
+  const clearStartCountdownTimer = () => {
+    if (countdownTimeoutRef.current) {
+      clearTimeout(countdownTimeoutRef.current);
+      countdownTimeoutRef.current = null;
+    }
   };
 
   const startForegroundTracking = useCallback(async (sessionId: string) => {
@@ -117,7 +179,7 @@ export default function TrackerScreen() {
     );
   }, [loadRouteFromDB]);
 
-  const requestTrackingPermissions = async () => {
+  const requestTrackingPermissions = useCallback(async () => {
     const { status: fgStatus } = await Location.requestForegroundPermissionsAsync();
     if (fgStatus !== 'granted') {
       throw new Error('위치 정보 접근 권한이 거부되었습니다.');
@@ -131,34 +193,57 @@ export default function TrackerScreen() {
     if (bgStatus !== 'granted') {
       throw new Error('백그라운드 위치 권한이 필요합니다. 산행 경로를 기록하려면 "항상 허용" 권한을 허용해주세요.');
     }
-  };
+  }, []);
+
+  const prepareTrackingLocation = useCallback(async () => {
+    await requestTrackingPermissions();
+
+    const currentLocation = await Location.getCurrentPositionAsync({
+      accuracy: Location.Accuracy.High,
+    });
+
+    setLocation(currentLocation);
+    setRouteCoordinates([]);
+    setPhotos([]);
+    setElevationGain(0);
+    setErrorMsg('등산 시작 준비가 완료되었습니다.');
+  }, [requestTrackingPermissions]);
 
   useEffect(() => {
     let isMounted = true;
 
     const restoreTrackingState = async () => {
       try {
-        const { status: fgStatus } = await Location.requestForegroundPermissionsAsync();
-        if (fgStatus !== 'granted') {
-          if (isMounted) setErrorMsg('위치 정보 접근 권한이 거부되었습니다.');
+        const activeSessionId = await getCurrentSessionId();
+        if (!isMounted) return;
+
+        if (!activeSessionId) {
+          try {
+            await prepareTrackingLocation();
+          } catch (error) {
+            if (!isMounted) return;
+            setErrorMsg(error instanceof Error ? error.message : '위치 확인 중 문제가 발생했습니다.');
+          }
           return;
         }
 
-        if (!isIosExpoGo) {
-          const { status: bgStatus } = await Location.requestBackgroundPermissionsAsync();
-          if (bgStatus !== 'granted') {
-            Alert.alert(
-              '백그라운드 위치 권한 필요',
-              '앱이 백그라운드에 있을 때도 경로를 기록하려면 "항상 허용" 권한이 필요합니다.'
-            );
-          }
+        try {
+          await requestTrackingPermissions();
+        } catch (error) {
+          if (!isMounted) return;
+          setErrorMsg(error instanceof Error ? error.message : '진행 중인 산행을 복원하려면 위치 권한이 필요합니다.');
+          await setCurrentSessionId('');
+          currentSessionIdRef.current = '';
+          setRouteCoordinates([]);
+          setPhotos([]);
+          setElevationGain(0);
+          return;
         }
 
         const currentLocation = await Location.getCurrentPositionAsync({});
         if (!isMounted) return;
         setLocation(currentLocation);
 
-        const activeSessionId = await getCurrentSessionId();
         const isTaskRunning = isIosExpoGo ? false : await isLocationTaskRunning();
         if (!isMounted) return;
 
@@ -174,6 +259,7 @@ export default function TrackerScreen() {
           setIsTracking(true);
           await loadRouteFromDB(activeSessionId);
           startRouteRefresh();
+          startElapsedTimer();
         } else if (activeSessionId && isIosExpoGo) {
           currentSessionIdRef.current = activeSessionId;
 
@@ -187,8 +273,13 @@ export default function TrackerScreen() {
           await loadRouteFromDB(activeSessionId);
           await startForegroundTracking(activeSessionId);
           startRouteRefresh();
+          startElapsedTimer();
         } else if (activeSessionId && !isTaskRunning) {
           await setCurrentSessionId('');
+          currentSessionIdRef.current = '';
+          setRouteCoordinates([]);
+          setPhotos([]);
+          setElevationGain(0);
         }
       } catch (error) {
         console.error('[Tracker] Failed to restore tracking state:', error);
@@ -199,10 +290,13 @@ export default function TrackerScreen() {
 
     return () => {
       isMounted = false;
+      countdownRunRef.current += 1;
+      clearStartCountdownTimer();
       stopForegroundTracking();
       stopRouteRefresh();
+      stopElapsedTimer();
     };
-  }, [loadRouteFromDB, startForegroundTracking, startRouteRefresh]);
+  }, [loadRouteFromDB, prepareTrackingLocation, requestTrackingPermissions, startElapsedTimer, startForegroundTracking, startRouteRefresh]);
 
   const handleSync = async () => {
     setIsSyncing(true);
@@ -222,6 +316,7 @@ export default function TrackerScreen() {
 
     setIsTrackingAction(true);
     const sessionId = currentSessionIdRef.current;
+    const startedAt = sessionStartRef.current;
     let weatherNotice = '';
 
     try {
@@ -230,6 +325,7 @@ export default function TrackerScreen() {
         await stopLocationTask();
       }
       stopRouteRefresh();
+      stopElapsedTimer();
       setIsTracking(false);
 
       if (sessionId) {
@@ -240,13 +336,13 @@ export default function TrackerScreen() {
       currentSessionIdRef.current = '';
       await setCurrentSessionId('');
 
-      if (user && sessionStartRef.current && location) {
+      if (user && startedAt && location) {
         try {
           const w = await fetchWeather(location.coords.latitude, location.coords.longitude);
           const safety = evaluateHikingSafety(w);
           await saveHikeSession({
             user_id: user.id,
-            started_at: sessionStartRef.current,
+            started_at: startedAt,
             ended_at: new Date().toISOString(),
             weather_score: safety.score,
             temp: w.temp,
@@ -260,10 +356,18 @@ export default function TrackerScreen() {
         }
       }
 
-      await loadRouteFromDB(sessionId);
+      const sessionSummary = sessionId
+        ? await loadSessionSummary(sessionId)
+        : { elevationGain, photoCount: photos.length };
+
+      sessionStartRef.current = null;
+      setRouteCoordinates([]);
+      setPhotos([]);
+      setElevationGain(0);
+      setElapsedSeconds(0);
       Alert.alert(
         '산행 종료',
-        `누적 상승 ${Math.floor(elevationGain)}m, 사진 ${photos.length}장으로 기록을 마쳤습니다.${weatherNotice}`,
+        `누적 상승 ${Math.floor(sessionSummary.elevationGain)}m, 사진 ${sessionSummary.photoCount}장으로 기록을 마쳤습니다.${weatherNotice}`,
         [
           { text: '계속 보기', style: 'cancel' },
           { text: '기록 보기', onPress: () => router.push('/records') },
@@ -283,12 +387,14 @@ export default function TrackerScreen() {
     let newSessionId = '';
 
     try {
+      setErrorMsg(null);
       await requestTrackingPermissions();
 
       newSessionId = await createSession();
       currentSessionIdRef.current = newSessionId;
       await setCurrentSessionId(newSessionId);
       sessionStartRef.current = new Date().toISOString();
+      setElapsedSeconds(0);
       console.log('[Tracker] 새 세션 시작:', newSessionId);
 
       const currentLocation = await Location.getCurrentPositionAsync({
@@ -316,7 +422,7 @@ export default function TrackerScreen() {
           timeInterval: 10000,
           distanceInterval: 5,
           foregroundService: {
-            notificationTitle: '호경크루',
+            notificationTitle: '덩산',
             notificationBody: '산행 경로를 백그라운드에서 기록 중입니다.',
             notificationColor: '#2ECC71',
           },
@@ -325,6 +431,7 @@ export default function TrackerScreen() {
 
       setIsTracking(true);
       startRouteRefresh();
+      startElapsedTimer();
     } catch (error) {
       stopForegroundTracking();
       if (!isIosExpoGo) {
@@ -336,10 +443,46 @@ export default function TrackerScreen() {
       currentSessionIdRef.current = '';
       await setCurrentSessionId('');
       setIsTracking(false);
+      stopElapsedTimer();
+      setElapsedSeconds(0);
+      setErrorMsg(error instanceof Error ? error.message : '산행 시작 중 문제가 발생했습니다.');
       Alert.alert('시작 실패', error instanceof Error ? error.message : '산행 시작 중 문제가 발생했습니다.');
     } finally {
       setIsTrackingAction(false);
     }
+  };
+
+  const cancelStartCountdown = () => {
+    countdownRunRef.current += 1;
+    clearStartCountdownTimer();
+    setStartCountdown(null);
+  };
+
+  const beginStartCountdown = () => {
+    if (isTracking || isTrackingAction || startCountdown !== null) return;
+
+    const runId = countdownRunRef.current + 1;
+    countdownRunRef.current = runId;
+    setErrorMsg(null);
+    setStartCountdown(3);
+
+    const tick = (nextCount: number) => {
+      countdownTimeoutRef.current = setTimeout(() => {
+        if (countdownRunRef.current !== runId) return;
+
+        if (nextCount > 0) {
+          setStartCountdown(nextCount);
+          tick(nextCount - 1);
+          return;
+        }
+
+        countdownTimeoutRef.current = null;
+        setStartCountdown(null);
+        startTracking();
+      }, 1000);
+    };
+
+    tick(2);
   };
 
   const takePhoto = async () => {
@@ -367,7 +510,7 @@ export default function TrackerScreen() {
   };
 
   const currentAltitude = location?.coords?.altitude ? Math.floor(location.coords.altitude) : 0;
-  const floors = calculateFloors(elevationGain);
+  const elapsedTime = formatElapsedTime(elapsedSeconds);
 
   return (
     <View style={[styles.container, { backgroundColor: theme.background }]}>
@@ -393,7 +536,7 @@ export default function TrackerScreen() {
           <MapView currentLocation={location.coords} routeCoordinates={routeCoordinates} photos={photos} />
         ) : (
           <View style={[styles.loadingContainer, { backgroundColor: theme.background }]}>
-            <ActivityIndicator size="large" color={theme.tint} />
+            {!errorMsg && <ActivityIndicator size="large" color={theme.tint} />}
             <Text style={{color: theme.text, marginTop: 10}}>{errorMsg || "위치 정보를 가져오는 중..."}</Text>
           </View>
         )}
@@ -404,6 +547,15 @@ export default function TrackerScreen() {
           </TouchableOpacity>
         )}
       </View>
+
+      {startCountdown !== null && (
+        <View style={styles.countdownOverlay}>
+          <Text style={styles.countdownNumber}>{startCountdown}</Text>
+          <TouchableOpacity style={styles.countdownCancelButton} onPress={cancelStartCountdown}>
+            <Text style={styles.countdownCancelText}>취소</Text>
+          </TouchableOpacity>
+        </View>
+      )}
 
       <View style={styles.controls}>
         {isTracking && (
@@ -417,18 +569,18 @@ export default function TrackerScreen() {
               <Text style={styles.statValue}>{Math.floor(elevationGain)}m</Text>
             </View>
             <View style={styles.statBox}>
-              <Text style={styles.statLabel}>환산 층수</Text>
-              <Text style={styles.statValue}>{floors}층</Text>
+              <Text style={styles.statLabel}>진행시간</Text>
+              <Text style={styles.statValue}>{elapsedTime}</Text>
             </View>
           </View>
         )}
         <TouchableOpacity 
-          style={[styles.button, { backgroundColor: isTracking ? '#FF6B6B' : theme.tint }, isTrackingAction && styles.buttonDisabled]}
-          onPress={isTracking ? stopTracking : startTracking}
-          disabled={isTrackingAction}
+          style={[styles.button, { backgroundColor: isTracking ? '#FF6B6B' : theme.tint }, (isTrackingAction || startCountdown !== null) && styles.buttonDisabled]}
+          onPress={isTracking ? stopTracking : beginStartCountdown}
+          disabled={isTrackingAction || startCountdown !== null}
         >
           <Text style={styles.buttonText}>
-            {isTrackingAction ? '처리 중...' : isTracking ? '등산 종료' : '등산 시작'}
+            {isTrackingAction ? '처리 중...' : startCountdown !== null ? '곧 시작...' : isTracking ? '등산 종료' : '등산 시작'}
           </Text>
         </TouchableOpacity>
       </View>
@@ -500,6 +652,36 @@ const styles = StyleSheet.create({
     color: '#FFF',
     fontSize: 20,
     fontWeight: 'bold',
+  },
+  countdownOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+    zIndex: 20,
+    elevation: 20,
+  },
+  countdownNumber: {
+    color: '#FFF',
+    fontSize: 120,
+    fontWeight: '900',
+    lineHeight: 132,
+    textAlign: 'center',
+  },
+  countdownCancelButton: {
+    marginTop: 28,
+    minWidth: 160,
+    paddingVertical: 14,
+    paddingHorizontal: 28,
+    borderRadius: 28,
+    backgroundColor: 'rgba(255,255,255,0.95)',
+    alignItems: 'center',
+  },
+  countdownCancelText: {
+    color: '#222',
+    fontSize: 18,
+    fontWeight: '800',
   },
   loadingContainer: {
     flex: 1,
