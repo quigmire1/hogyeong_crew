@@ -59,11 +59,11 @@ const formatDistance = (distanceKm: number) => {
 };
 
 const getLevelLabel = (stats: ProfileStats) => {
-  if (stats.sessionCount >= 30) return 'Lv.15 전문 등산객';
-  if (stats.sessionCount >= 15) return 'Lv.10 꾸준한 등산객';
-  if (stats.sessionCount >= 5) return 'Lv.5 산행 루틴러';
-  if (stats.sessionCount >= 1) return 'Lv.2 새싹 등산객';
-  return 'Lv.1 첫 산행 준비 중';
+  if (stats.sessionCount >= 30) return 'Lv.15 전문 덩산객';
+  if (stats.sessionCount >= 15) return 'Lv.10 꾸준한 덩산객';
+  if (stats.sessionCount >= 5) return 'Lv.5 덩산 루틴러';
+  if (stats.sessionCount >= 1) return 'Lv.2 새싹 덩산객';
+  return 'Lv.1 첫 덩산 준비 중';
 };
 
 export default function ProfileScreen() {
@@ -412,7 +412,7 @@ export default function ProfileScreen() {
           {infoExpanded && (
             <>
               <Text style={styles.infoBody}>
-                내가 참석한 산행의 날씨가 전체 평균보다{' '}
+                내가 참석한 덩산의 날씨가 전체 평균보다{' '}
                 <Text style={styles.infoHighlight}>더 좋으면 날씨요정</Text>,{' '}
                 <Text style={styles.infoWarningText}>더 나쁘면 날씨요괴</Text>가 됩니다.
               </Text>
@@ -456,7 +456,7 @@ export default function ProfileScreen() {
               <View style={styles.goblinBox}>
                 <Text style={styles.goblinBoxTitle}>👺 → 🧚 날씨요괴에서 날씨요정으로 변신할 수 있어요!</Text>
                 <Text style={styles.goblinBoxText}>
-                  <Text style={styles.goblinBoxBold}>날씨 좋은 날 산행에 자주 참석</Text>하면 지수가 올라가 요괴에서 요정으로 변신할 수 있어요.{'\n'}
+                  <Text style={styles.goblinBoxBold}>날씨 좋은 날 덩산에 자주 참석</Text>하면 지수가 올라가 요괴에서 요정으로 변신할 수 있어요.{'\n'}
                   반대로 요정 등급이라도 <Text style={styles.goblinBoxBold}>불참 + 날씨가 좋으면</Text> 요괴로 변할 수 있으니 방심금지! ⛰️
                 </Text>
               </View>
@@ -512,7 +512,7 @@ export default function ProfileScreen() {
             ) : (
               <View style={styles.photoEmptyState}>
                 <FontAwesome name="camera" size={22} color="#B8C2CC" />
-                <Text style={styles.photoEmptyText}>아직 산행 사진이 없습니다.</Text>
+                <Text style={styles.photoEmptyText}>아직 덩산 사진이 없습니다.</Text>
               </View>
             )}
           </View>

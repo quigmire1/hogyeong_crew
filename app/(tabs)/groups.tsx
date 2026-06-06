@@ -6,6 +6,7 @@ import {
 import { FontAwesome } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import DateTimePickerModal from 'react-native-modal-datetime-picker';
+import { useRouter } from 'expo-router';
 import * as Crypto from 'expo-crypto';
 import { Colors } from '../../constants/theme';
 import { useColorScheme } from '../../hooks/use-color-scheme';
@@ -61,17 +62,23 @@ interface Group {
 interface GroupHike {
   id: string;
   group_id: string;
-  title: string;
   mountain_name: string;
   meeting_at: string;
+  start_time?: string | null;
   meeting_point: string;
-  description: string;
   summary_text?: string;
   creator_id: string;
-  status: 'planned' | 'completed';
+  status: GroupHikeStatus | 'planned' | 'completed';
+  completed_member_count?: number | null;
+  completed_at?: string | null;
   participants_count: number;
   is_attending: boolean;
+  my_participation_status: GroupHikeParticipationStatus;
+  my_local_session_id?: string | null;
 }
+
+type GroupHikeStatus = 'SCHEDULED' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED' | 'EXPIRED';
+type GroupHikeParticipationStatus = 'NOT_STARTED' | 'RECORDING' | 'FINISHED';
 
 interface JoinGroupResult {
   group_id: string;
@@ -104,6 +111,30 @@ const formatMeetingTime = (iso: string) => {
   });
 };
 
+const GROUP_HIKE_STATUS_META: Record<GroupHikeStatus, { label: string; badge: string; color: string; background: string }> = {
+  SCHEDULED: { label: '예정된 덩산', badge: '📅', color: '#F9A825', background: '#FFF8E1' },
+  IN_PROGRESS: { label: '진행중인 덩산', badge: '🥾', color: '#1DB954', background: '#E8F8EE' },
+  COMPLETED: { label: '완료된 덩산', badge: '✅', color: '#2E7D32', background: '#E8F5E9' },
+  CANCELLED: { label: '취소된 덩산', badge: '⛔', color: '#C62828', background: '#FFEBEE' },
+  EXPIRED: { label: '만료된 덩산', badge: '⌛', color: '#6B7280', background: '#F2F4F6' },
+};
+
+const normalizeGroupHikeStatus = (status: GroupHike['status']): GroupHikeStatus => {
+  if (status === 'planned') return 'SCHEDULED';
+  if (status === 'completed') return 'COMPLETED';
+  return status;
+};
+
+const isTerminalGroupHikeStatus = (status: GroupHikeStatus) => (
+  status === 'COMPLETED' || status === 'CANCELLED' || status === 'EXPIRED'
+);
+
+const formatGroupHikeName = (hike: Pick<GroupHike, 'mountain_name' | 'meeting_at' | 'start_time'>) => {
+  const startTime = hike.start_time ?? hike.meeting_at;
+  const month = startTime ? new Date(startTime).getMonth() + 1 : new Date().getMonth() + 1;
+  return `${month}월 ${hike.mountain_name || '덩산'}`;
+};
+
 const isDuplicateMembershipError = (error: { code?: string; message?: string } | null | undefined) => {
   if (!error) return false;
   return error.code === '23505' || error.message?.toLowerCase().includes('duplicate');
@@ -121,8 +152,9 @@ export default function GroupsScreen() {
   const theme = Colors[colorScheme ?? 'light'];
   const isDark = colorScheme === 'dark';
   const { user } = useAuth();
+  const router = useRouter();
 
-  // view: 'groups' = 그룹 목록, 'hikes' = 그룹 산행 기록
+  // view: 'groups' = 그룹 목록, 'hikes' = 그룹 덩산 기록
   const [view, setView] = useState<'groups' | 'hikes'>('groups');
   const [selectedGroup, setSelectedGroup] = useState<Group | null>(null);
 
@@ -153,10 +185,10 @@ export default function GroupsScreen() {
   const [newGroupDesc, setNewGroupDesc] = useState('');
   const [inviteCodeInput, setInviteCodeInput] = useState('');
   const [newHike, setNewHike] = useState({
-    title: '', mountain_name: '', meeting_at: '', meeting_point: '', description: '',
+    mountain_name: '', meeting_at: '', meeting_point: '',
   });
   const [editHike, setEditHike] = useState({
-    title: '', mountain_name: '', meeting_at: '', meeting_point: '', description: '',
+    mountain_name: '', meeting_at: '', meeting_point: '',
   });
   const [isDatePickerVisible, setDatePickerVisibility] = useState(false);
   const [datePickerTarget, setDatePickerTarget] = useState<'create' | 'edit'>('create');
@@ -298,27 +330,41 @@ export default function GroupsScreen() {
   const fetchGroupHikes = async (groupId: string) => {
     setLoading(true);
     try {
+      const { error: refreshError } = await supabase.rpc('refresh_group_hike_statuses', {
+        p_group_id: groupId,
+      });
+      if (refreshError) {
+        console.warn('[Groups] Failed to refresh group hike statuses:', refreshError.message);
+      }
+
       const { data, error } = await supabase
         .from('group_hikes')
         .select('*, group_hike_attendance(count)')
         .eq('group_id', groupId)
-        .order('meeting_at', { ascending: false }); // 최근 산행부터
+        .order('start_time', { ascending: false, nullsFirst: false })
+        .order('meeting_at', { ascending: false }); // 최근 덩산부터
       if (error) throw error;
 
       const hikeIds = data?.map((h: any) => h.id) ?? [];
       const { data: myAttendanceRows, error: attendanceError } = user?.id && hikeIds.length > 0
         ? await supabase
           .from('group_hike_attendance')
-          .select('hike_id')
+          .select('hike_id, participation_status, local_session_id')
           .eq('user_id', user.id)
           .in('hike_id', hikeIds)
         : { data: [], error: null };
       if (attendanceError) throw attendanceError;
 
-      const attendingHikeIds = new Set((myAttendanceRows ?? []).map((row: any) => row.hike_id));
+      const myAttendanceMap = new Map(
+        (myAttendanceRows ?? []).map((row: any) => [row.hike_id, row]),
+      );
       setHikes((data ?? []).map((h: any) => ({
         ...h, participants_count: h.group_hike_attendance[0]?.count ?? 0,
-        is_attending: attendingHikeIds.has(h.id),
+        status: normalizeGroupHikeStatus(h.status),
+        meeting_at: h.start_time ?? h.meeting_at,
+        is_attending: myAttendanceMap.has(h.id),
+        my_participation_status: myAttendanceMap.get(h.id)?.participation_status ?? 'NOT_STARTED',
+        my_local_session_id: myAttendanceMap.get(h.id)?.local_session_id ?? null,
       })));
     } catch (e: any) {
       console.error('[Groups]', e.message);
@@ -369,7 +415,7 @@ export default function GroupsScreen() {
 
   const handleOpenParticipants = async (hike: GroupHike) => {
     setParticipantModalHeading('참석 멤버');
-    setParticipantModalTitle(hike.title);
+    setParticipantModalTitle(formatGroupHikeName(hike));
     setParticipantMembers([]);
     setParticipantModalVisible(true);
     setParticipantLoading(true);
@@ -502,14 +548,20 @@ export default function GroupsScreen() {
 
   const handleCreateHike = async () => {
     if (isCreatingHike) return;
-    if (!newHike.title || !newHike.meeting_at) { Alert.alert('알림', '제목과 일시는 필수입니다.'); return; }
-    if (!user?.id) { Alert.alert('로그인 필요', '산행을 등록하려면 로그인이 필요합니다.'); return; }
+    if (!newHike.mountain_name || !newHike.meeting_at) { Alert.alert('알림', '산 이름과 일시는 필수입니다.'); return; }
+    if (!user?.id) { Alert.alert('로그인 필요', '덩산을 등록하려면 로그인이 필요합니다.'); return; }
 
     setIsCreatingHike(true);
     try {
       const { data, error } = await supabase
         .from('group_hikes')
-        .insert([{ ...newHike, group_id: selectedGroup?.id, creator_id: user.id, status: 'planned' }])
+        .insert([{
+          ...newHike,
+          start_time: newHike.meeting_at,
+          group_id: selectedGroup?.id,
+          creator_id: user.id,
+          status: 'SCHEDULED',
+        }])
         .select().single();
       if (error) throw error;
 
@@ -519,7 +571,7 @@ export default function GroupsScreen() {
       if (attendanceError && !isDuplicateMembershipError(attendanceError)) throw attendanceError;
 
       setCreateHikeModal(false);
-      setNewHike({ title: '', mountain_name: '', meeting_at: '', meeting_point: '', description: '' });
+      setNewHike({ mountain_name: '', meeting_at: '', meeting_point: '' });
       if (selectedGroup) fetchGroupHikes(selectedGroup.id);
     } catch (e: any) {
       Alert.alert('오류', e.message);
@@ -530,36 +582,33 @@ export default function GroupsScreen() {
 
   const handleOpenEditHike = (hike: GroupHike) => {
     if (hike.creator_id !== user?.id) {
-      Alert.alert('수정 불가', '산행 생성자만 일정을 수정할 수 있습니다.');
+      Alert.alert('수정 불가', '덩산 생성자만 일정을 수정할 수 있습니다.');
       return;
     }
 
     setEditingHike(hike);
     setEditHike({
-      title: hike.title ?? '',
       mountain_name: hike.mountain_name ?? '',
       meeting_at: hike.meeting_at ?? '',
       meeting_point: hike.meeting_point ?? '',
-      description: hike.description ?? '',
     });
     setEditHikeModal(true);
   };
 
   const handleUpdateHike = async () => {
     if (isUpdatingHike || !editingHike) return;
-    if (!editHike.title || !editHike.meeting_at) { Alert.alert('알림', '제목과 일시는 필수입니다.'); return; }
-    if (!user?.id) { Alert.alert('로그인 필요', '산행을 수정하려면 로그인이 필요합니다.'); return; }
+    if (!editHike.mountain_name || !editHike.meeting_at) { Alert.alert('알림', '산 이름과 일시는 필수입니다.'); return; }
+    if (!user?.id) { Alert.alert('로그인 필요', '덩산을 수정하려면 로그인이 필요합니다.'); return; }
 
     setIsUpdatingHike(true);
     try {
       const { error } = await supabase
         .from('group_hikes')
         .update({
-          title: editHike.title.trim(),
           mountain_name: editHike.mountain_name.trim() || null,
           meeting_at: editHike.meeting_at,
+          start_time: editHike.meeting_at,
           meeting_point: editHike.meeting_point.trim() || null,
-          description: editHike.description.trim() || null,
         })
         .eq('id', editingHike.id)
         .eq('creator_id', user.id)
@@ -567,9 +616,16 @@ export default function GroupsScreen() {
         .single();
       if (error) throw error;
 
+      const { error: recomputeError } = await supabase.rpc('recompute_group_hike_status', {
+        p_hike_id: editingHike.id,
+      });
+      if (recomputeError) {
+        console.warn('[Groups] Failed to recompute group hike status:', recomputeError.message);
+      }
+
       setEditHikeModal(false);
       setEditingHike(null);
-      setEditHike({ title: '', mountain_name: '', meeting_at: '', meeting_point: '', description: '' });
+      setEditHike({ mountain_name: '', meeting_at: '', meeting_point: '' });
       refreshSelectedGroupHikes();
     } catch (e: any) {
       Alert.alert('오류', e.message);
@@ -614,38 +670,77 @@ export default function GroupsScreen() {
     }
   };
 
-  const handleDeleteHike = async (hike: GroupHike) => {
-    if (deletingHikeId || !user?.id) return;
-    if (hike.creator_id !== user.id) {
-      Alert.alert('삭제 불가', '산행 생성자만 일정을 삭제할 수 있습니다.');
+  const handleStartGroupHike = (hike: GroupHike) => {
+    const status = normalizeGroupHikeStatus(hike.status);
+    if (status !== 'IN_PROGRESS') {
+      Alert.alert('시작 불가', '진행중인 덩산일 때만 덩산을 시작할 수 있습니다.');
       return;
     }
 
+    router.push({
+      pathname: '/(tabs)/tracker',
+      params: {
+        groupHikeId: hike.id,
+        groupHikeTitle: formatGroupHikeName(hike),
+      },
+    });
+  };
+
+  const handleOpenGroupHikeRecords = (hike: GroupHike) => {
+    router.push({
+      pathname: '/records',
+      params: {
+        groupHikeId: hike.id,
+        groupHikeTitle: formatGroupHikeName(hike),
+      },
+    });
+  };
+
+  const handleManualCompleteHike = (hike: GroupHike) => {
+    if (!user?.id) return;
+
     Alert.alert(
-      '산행 일정 삭제',
-      '참석 의사를 표시한 크루원이 있어도 이 일정을 삭제합니다. 계속할까요?',
+      '덩산 수동 완료',
+      '완료 기준 인원에 도달하지 않았지만 이 그룹 덩산을 완료 처리할까요?',
       [
         { text: '취소', style: 'cancel' },
         {
-          text: '삭제',
+          text: '완료 처리',
+          onPress: async () => {
+            try {
+              const { error } = await supabase.rpc('manual_complete_group_hike', {
+                p_hike_id: hike.id,
+              });
+              if (error) throw error;
+              refreshSelectedGroupHikes();
+            } catch (e: any) {
+              Alert.alert('오류', e.message);
+            }
+          },
+        },
+      ],
+    );
+  };
+
+  const handleCancelHike = (hike: GroupHike) => {
+    if (!user?.id) return;
+
+    Alert.alert(
+      '덩산 취소',
+      '이 덩산을 취소하면 이후 자동 상태 변경 대상에서 제외됩니다. 계속할까요?',
+      [
+        { text: '닫기', style: 'cancel' },
+        {
+          text: '취소 처리',
           style: 'destructive',
           onPress: async () => {
             setDeletingHikeId(hike.id);
             try {
-              const { error: attendanceError } = await supabase
-                .from('group_hike_attendance')
-                .delete()
-                .eq('hike_id', hike.id);
-              if (attendanceError) throw attendanceError;
-
-              const { error: hikeError } = await supabase
-                .from('group_hikes')
-                .delete()
-                .eq('id', hike.id)
-                .eq('creator_id', user.id);
-              if (hikeError) throw hikeError;
-
-              setHikes((items) => items.filter((item) => item.id !== hike.id));
+              const { error } = await supabase.rpc('cancel_group_hike', {
+                p_hike_id: hike.id,
+              });
+              if (error) throw error;
+              refreshSelectedGroupHikes();
             } catch (e: any) {
               Alert.alert('오류', e.message);
             } finally {
@@ -686,8 +781,13 @@ export default function GroupsScreen() {
   );
 
   const renderHikeItem = ({ item }: { item: GroupHike }) => {
-    const date = new Date(item.meeting_at);
-    const isCompleted = item.status === 'completed';
+    const status = normalizeGroupHikeStatus(item.status);
+    const statusMeta = GROUP_HIKE_STATUS_META[status];
+    const startTime = item.start_time ?? item.meeting_at;
+    const date = new Date(startTime);
+    const isCompleted = status === 'COMPLETED';
+    const isTerminal = isTerminalGroupHikeStatus(status);
+    const canStartGroupHike = status === 'IN_PROGRESS';
     const isCreator = item.creator_id === user?.id;
     const isAttendanceLoading = attendanceActionHikeId === item.id;
     const isDeleting = deletingHikeId === item.id;
@@ -695,28 +795,39 @@ export default function GroupsScreen() {
     return (
       <View style={[styles.hikeCard, { backgroundColor: isDark ? '#1A1A1A' : '#FFF' }]}>
         <View style={styles.hikeTopRow}>
-          <View style={[styles.hikeBadge, { backgroundColor: isCompleted ? '#E8F5E9' : '#FFF8E1' }]}>
-            <Text style={[styles.hikeBadgeText, { color: isCompleted ? '#2E7D32' : '#F9A825' }]}>
-              {isCompleted ? '✅ 완료된 산행' : '📅 예정된 산행'}
+          <View style={[styles.hikeBadge, { backgroundColor: statusMeta.background }]}>
+            <Text style={[styles.hikeBadgeText, { color: statusMeta.color }]}>
+              {statusMeta.badge} {statusMeta.label}
             </Text>
           </View>
           <View style={[styles.attendanceBadge, { backgroundColor: item.is_attending ? '#E8F8EE' : '#F2F4F6' }]}>
             <Text style={[styles.attendanceBadgeText, { color: item.is_attending ? '#1DB954' : '#8A949E' }]}>
-              {item.is_attending ? '참석 중' : '미참석'}
+              {item.my_participation_status === 'FINISHED'
+                ? '기록 완료'
+                : item.my_participation_status === 'RECORDING'
+                  ? '기록 중'
+                  : item.is_attending ? '참석' : '미참석'}
             </Text>
           </View>
         </View>
 
-        <Text style={[styles.hikeTitle, { color: theme.text }]}>{item.title}</Text>
-        {item.mountain_name ? <Text style={styles.hikeMountain}>⛰️ {item.mountain_name}</Text> : null}
+        <Text style={styles.hikeMountainTitle}>⛰️ {formatGroupHikeName(item)}</Text>
 
         <View style={styles.hikeMetaCol}>
           <View style={styles.hikeMeta}>
             <FontAwesome name="calendar" size={12} color={theme.tint} />
             <Text style={styles.hikeMetaText}>
               {date.toLocaleDateString('ko-KR', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'short' })}
+              {' '}
+              {date.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })}
             </Text>
           </View>
+          {typeof item.completed_member_count === 'number' && item.completed_member_count > 0 ? (
+            <View style={styles.hikeMeta}>
+              <FontAwesome name="check-circle" size={12} color={theme.tint} />
+              <Text style={styles.hikeMetaText}>완료 {item.completed_member_count}명</Text>
+            </View>
+          ) : null}
           {item.meeting_point ? (
             <View style={styles.hikeMeta}>
               <FontAwesome name="map-marker" size={12} color={theme.tint} />
@@ -727,7 +838,7 @@ export default function GroupsScreen() {
 
         {isCompleted && item.summary_text ? (
           <View style={styles.summaryBox}>
-            <Text style={styles.summaryLabel}>📝 산행 기록</Text>
+            <Text style={styles.summaryLabel}>📝 덩산 기록</Text>
             <Text style={[styles.summaryText, { color: theme.text }]}>{item.summary_text}</Text>
           </View>
         ) : null}
@@ -742,33 +853,67 @@ export default function GroupsScreen() {
             <Text style={styles.participantsText}>{item.participants_count}명 함께</Text>
             <FontAwesome name="chevron-right" size={10} color="#BBB" />
           </TouchableOpacity>
-          {!isCompleted && (
+          <View style={styles.hikeActionRow}>
+            {isCreator && !isTerminal && (
+              <>
+                <TouchableOpacity
+                  style={[styles.hikeActionButton, styles.editHikeButton]}
+                  onPress={() => handleOpenEditHike(item)}
+                  disabled={isDeleting || isUpdatingHike || Boolean(attendanceActionHikeId)}
+                >
+                  <FontAwesome name="pencil" size={13} color="#1DB954" />
+                  <Text style={styles.editHikeButtonText}>수정</Text>
+                </TouchableOpacity>
+                {status === 'IN_PROGRESS' ? (
+                  <TouchableOpacity
+                    style={[styles.hikeActionButton, styles.manualCompleteButton]}
+                    onPress={() => handleManualCompleteHike(item)}
+                    disabled={isDeleting || isUpdatingHike || Boolean(attendanceActionHikeId)}
+                  >
+                    <FontAwesome name="check-circle" size={13} color="#2E7D32" />
+                    <Text style={styles.manualCompleteButtonText}>완료 처리</Text>
+                  </TouchableOpacity>
+                ) : null}
+                <TouchableOpacity
+                  style={[styles.hikeActionButton, styles.deleteHikeButton, isDeleting && styles.submitBtnDisabled]}
+                  onPress={() => handleCancelHike(item)}
+                  disabled={isDeleting || isUpdatingHike || Boolean(attendanceActionHikeId)}
+                >
+                  {isDeleting
+                    ? <ActivityIndicator size="small" color="#FF4B4B" />
+                    : <>
+                      <FontAwesome name="ban" size={13} color="#FF4B4B" />
+                      <Text style={styles.deleteHikeButtonText}>취소</Text>
+                    </>
+                  }
+                </TouchableOpacity>
+              </>
+            )}
+            {isCompleted ? (
+              <TouchableOpacity
+                style={[styles.hikeActionButton, styles.recordHikeButton]}
+                onPress={() => handleOpenGroupHikeRecords(item)}
+              >
+                <FontAwesome name="map" size={13} color="#FFF" />
+                <Text style={styles.recordHikeButtonText}>덩산 기록</Text>
+              </TouchableOpacity>
+            ) : (
+              <TouchableOpacity
+                style={[
+                  styles.hikeActionButton,
+                  styles.groupStartButton,
+                  !canStartGroupHike && styles.groupStartButtonDisabled,
+                ]}
+                onPress={() => handleStartGroupHike(item)}
+                disabled={!canStartGroupHike || isAttendanceLoading || Boolean(deletingHikeId)}
+              >
+                <FontAwesome name="play" size={13} color="#FFF" />
+                <Text style={styles.groupStartButtonText}>덩산 시작</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+          {!isTerminal && (
             <View style={styles.hikeActionRow}>
-              {isCreator && (
-                <>
-                  <TouchableOpacity
-                    style={[styles.hikeActionButton, styles.editHikeButton]}
-                    onPress={() => handleOpenEditHike(item)}
-                    disabled={isDeleting || isUpdatingHike || Boolean(attendanceActionHikeId)}
-                  >
-                    <FontAwesome name="pencil" size={13} color="#1DB954" />
-                    <Text style={styles.editHikeButtonText}>수정</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={[styles.hikeActionButton, styles.deleteHikeButton, isDeleting && styles.submitBtnDisabled]}
-                    onPress={() => handleDeleteHike(item)}
-                    disabled={isDeleting || isUpdatingHike || Boolean(attendanceActionHikeId)}
-                  >
-                    {isDeleting
-                      ? <ActivityIndicator size="small" color="#FF4B4B" />
-                      : <>
-                        <FontAwesome name="trash-o" size={13} color="#FF4B4B" />
-                        <Text style={styles.deleteHikeButtonText}>삭제</Text>
-                      </>
-                    }
-                  </TouchableOpacity>
-                </>
-              )}
               <TouchableOpacity
                 style={[
                   styles.hikeActionButton,
@@ -816,10 +961,10 @@ export default function GroupsScreen() {
             </TouchableOpacity>
           </View>
           <Text style={styles.headerTitle}>{selectedGroup.name}</Text>
-          <Text style={styles.headerSub}>산행 기록 · 최근 순</Text>
+          <Text style={styles.headerSub}>덩산 기록 · 최근 순</Text>
           <TouchableOpacity style={styles.addBtn} onPress={() => setCreateHikeModal(true)}>
             <FontAwesome name="plus" size={13} color="#1DB954" />
-            <Text style={styles.addBtnText}>산행 등록</Text>
+            <Text style={styles.addBtnText}>덩산 등록</Text>
           </TouchableOpacity>
         </LinearGradient>
 
@@ -828,8 +973,8 @@ export default function GroupsScreen() {
         ) : hikes.length === 0 ? (
           <View style={styles.empty}>
             <Text style={styles.emptyEmoji}>🏔️</Text>
-            <Text style={styles.emptyTitle}>아직 산행 기록이 없어요</Text>
-            <Text style={styles.emptyDesc}>첫 번째 그룹 산행을 등록해보세요!</Text>
+            <Text style={styles.emptyTitle}>아직 덩산 기록이 없어요</Text>
+            <Text style={styles.emptyDesc}>첫 번째 그룹 덩산을 등록해보세요!</Text>
           </View>
         ) : (
           <FlatList
@@ -842,22 +987,20 @@ export default function GroupsScreen() {
           />
         )}
 
-        {/* 산행 등록 모달 */}
+        {/* 덩산 등록 모달 */}
         <Modal visible={createHikeModal} animationType="slide" transparent>
           <View style={styles.overlay}>
             <View style={[styles.modalBox, { backgroundColor: isDark ? '#1A1A1A' : '#FFF' }]}>
               <View style={styles.modalHead}>
-                <Text style={[styles.modalTitle, { color: theme.text }]}>새 산행 등록</Text>
+                <Text style={[styles.modalTitle, { color: theme.text }]}>새 덩산 등록</Text>
                 <TouchableOpacity onPress={() => setCreateHikeModal(false)} disabled={isCreatingHike}>
                   <FontAwesome name="times" size={22} color={theme.text} />
                 </TouchableOpacity>
               </View>
               <ScrollView>
-                <StyledInput placeholder="산행 제목" value={newHike.title} onChangeText={(t: string) => setNewHike({ ...newHike, title: t })} />
                 <StyledInput placeholder="산 이름" value={newHike.mountain_name} onChangeText={(t: string) => setNewHike({ ...newHike, mountain_name: t })} />
                 {renderHikeDateTimeButtons('create', newHike.meeting_at)}
                 <StyledInput placeholder="집결 장소" value={newHike.meeting_point} onChangeText={(t: string) => setNewHike({ ...newHike, meeting_point: t })} />
-                <StyledInput placeholder="상세 설명" multiline value={newHike.description} onChangeText={(t: string) => setNewHike({ ...newHike, description: t })} />
                 {renderHikeDatePicker('create')}
                 <TouchableOpacity
                   style={[styles.submitBtn, { backgroundColor: theme.tint }, isCreatingHike && styles.submitBtnDisabled]}
@@ -874,12 +1017,12 @@ export default function GroupsScreen() {
           </View>
         </Modal>
 
-        {/* 산행 수정 모달 */}
+        {/* 덩산 수정 모달 */}
         <Modal visible={editHikeModal} animationType="slide" transparent>
           <View style={styles.overlay}>
             <View style={[styles.modalBox, { backgroundColor: isDark ? '#1A1A1A' : '#FFF' }]}>
               <View style={styles.modalHead}>
-                <Text style={[styles.modalTitle, { color: theme.text }]}>산행 일정 수정</Text>
+                <Text style={[styles.modalTitle, { color: theme.text }]}>덩산 일정 수정</Text>
                 <TouchableOpacity
                   onPress={() => {
                     setEditHikeModal(false);
@@ -891,11 +1034,9 @@ export default function GroupsScreen() {
                 </TouchableOpacity>
               </View>
               <ScrollView>
-                <StyledInput placeholder="산행 제목" value={editHike.title} onChangeText={(t: string) => setEditHike({ ...editHike, title: t })} />
                 <StyledInput placeholder="산 이름" value={editHike.mountain_name} onChangeText={(t: string) => setEditHike({ ...editHike, mountain_name: t })} />
                 {renderHikeDateTimeButtons('edit', editHike.meeting_at)}
                 <StyledInput placeholder="집결 장소" value={editHike.meeting_point} onChangeText={(t: string) => setEditHike({ ...editHike, meeting_point: t })} />
-                <StyledInput placeholder="상세 설명" multiline value={editHike.description} onChangeText={(t: string) => setEditHike({ ...editHike, description: t })} />
                 {renderHikeDatePicker('edit')}
                 <TouchableOpacity
                   style={[styles.submitBtn, { backgroundColor: theme.tint }, isUpdatingHike && styles.submitBtnDisabled]}
@@ -1136,18 +1277,17 @@ const styles = StyleSheet.create({
   hikeBadgeText: { fontSize: 12, fontWeight: '700' },
   attendanceBadge: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10 },
   attendanceBadgeText: { fontSize: 12, fontWeight: '800' },
-  hikeTitle: { fontSize: 18, fontWeight: '800', marginBottom: 4 },
-  hikeMountain: { fontSize: 14, color: '#1DB954', fontWeight: '600', marginBottom: 10 },
+  hikeMountainTitle: { fontSize: 18, color: '#1DB954', fontWeight: '800', marginBottom: 10 },
   hikeMetaCol: { gap: 5, marginBottom: 8 },
   hikeMeta: { flexDirection: 'row', alignItems: 'center', gap: 7 },
   hikeMetaText: { fontSize: 13, color: '#666' },
   summaryBox: { backgroundColor: '#F0FAF4', padding: 12, borderRadius: 12, borderLeftWidth: 4, borderLeftColor: '#1DB954', marginTop: 8 },
   summaryLabel: { fontSize: 12, fontWeight: '700', color: '#1DB954', marginBottom: 4 },
   summaryText: { fontSize: 13, lineHeight: 20 },
-  hikeFooter: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginTop: 12, paddingTop: 12, borderTopWidth: 1, borderTopColor: '#F0F0F0' },
+  hikeFooter: { gap: 10, marginTop: 12, paddingTop: 12, borderTopWidth: 1, borderTopColor: '#F0F0F0' },
   participantsRow: { flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 },
   participantsText: { fontSize: 13, color: '#999' },
-  hikeActionRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  hikeActionRow: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 8 },
   hikeActionButton: { minHeight: 34, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 14 },
   attendButton: { backgroundColor: '#1DB954' },
   attendButtonText: { color: '#FFF', fontSize: 13, fontWeight: '800' },
@@ -1157,6 +1297,13 @@ const styles = StyleSheet.create({
   editHikeButtonText: { color: '#1DB954', fontSize: 13, fontWeight: '800' },
   deleteHikeButton: { backgroundColor: '#FFF2F2', borderWidth: 1, borderColor: '#FFD6D6' },
   deleteHikeButtonText: { color: '#FF4B4B', fontSize: 13, fontWeight: '800' },
+  manualCompleteButton: { backgroundColor: '#E8F5E9', borderWidth: 1, borderColor: '#C8E6C9' },
+  manualCompleteButtonText: { color: '#2E7D32', fontSize: 13, fontWeight: '800' },
+  groupStartButton: { backgroundColor: '#1DB954' },
+  groupStartButtonDisabled: { backgroundColor: '#B8C2BB', opacity: 0.65 },
+  groupStartButtonText: { color: '#FFF', fontSize: 13, fontWeight: '800' },
+  recordHikeButton: { backgroundColor: '#2E7D32' },
+  recordHikeButtonText: { color: '#FFF', fontSize: 13, fontWeight: '800' },
 
   // Modals
   overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', padding: 20 },

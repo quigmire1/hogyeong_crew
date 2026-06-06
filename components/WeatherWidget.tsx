@@ -97,7 +97,7 @@ export function WeatherWidget() {
           <Text style={styles.safetyEmoji}>{safety.emoji}</Text>
           <View style={{ flex: 1 }}>
             <Text style={[styles.safetyTitle, { color: safetyColor }]}>
-              등산 안전 지수 {safety.score}점
+              덩산 안전 지수 {safety.score}점
             </Text>
             <Text style={[styles.safetyRec, { color: safetyColor }]} numberOfLines={expanded ? undefined : 1}>
               {safety.recommendation}

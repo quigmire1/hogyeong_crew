@@ -24,6 +24,8 @@ export const syncSessionsToCloud = async (): Promise<boolean> => {
           id: session.id,
           started_at: new Date(session.started_at).toISOString(),
           ended_at: session.ended_at === 0 ? null : new Date(session.ended_at).toISOString(),
+          group_hike_id: session.group_hike_id ?? null,
+          group_hike_title: session.group_hike_title ?? null,
         })),
         { onConflict: 'id' },
       );

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { StyleSheet, View, Text, TouchableOpacity, ActivityIndicator, Alert, Platform } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import * as Location from 'expo-location';
 import * as ImagePicker from 'expo-image-picker';
 import Constants from 'expo-constants';
@@ -16,6 +16,7 @@ import { WeatherBadge } from '../../components/WeatherBadge';
 import { fetchWeather, evaluateHikingSafety } from '../../utils/weather';
 import { saveHikeSession } from '../../utils/weatherFairy';
 import { useAuth } from '../../contexts/AuthContext';
+import { supabase } from '../../utils/supabase';
 
 const isIosExpoGo = Platform.OS === 'ios' && Constants.appOwnership === 'expo';
 
@@ -41,13 +42,23 @@ const loadSessionSummary = async (sessionId: string) => {
   };
 };
 
+const getParamString = (value: string | string[] | undefined) => (
+  Array.isArray(value) ? value[0] : value
+);
+
 export default function TrackerScreen() {
   const colorScheme = useColorScheme();
   const theme = Colors[colorScheme ?? 'light'];
   const { user } = useAuth();
   const router = useRouter();
+  const params = useLocalSearchParams<{
+    groupHikeId?: string;
+    groupHikeTitle?: string;
+  }>();
+  const requestedGroupHikeId = getParamString(params.groupHikeId);
+  const requestedGroupHikeTitle = getParamString(params.groupHikeTitle);
 
-  // 산행 세션 시작 시간 기록용
+  // 덩산 세션 시작 시간 기록용
   const sessionStartRef = useRef<string | null>(null);
   const [location, setLocation] = useState<Location.LocationObject | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -56,7 +67,7 @@ export default function TrackerScreen() {
   const [startCountdown, setStartCountdown] = useState<number | null>(null);
   const currentSessionIdRef = useRef<string>('');
   
-  // 등산 트래킹 상태
+  // 덩산 트래킹 상태
   const [isTracking, setIsTracking] = useState(false);
   const [routeCoordinates, setRouteCoordinates] = useState<Coordinate[]>([]);
   const [photos, setPhotos] = useState<PhotoRecord[]>([]);
@@ -67,6 +78,15 @@ export default function TrackerScreen() {
   const countdownTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const countdownRunRef = useRef(0);
   const foregroundLocationSubRef = useRef<Location.LocationSubscription | null>(null);
+  const [activeGroupHikeId, setActiveGroupHikeId] = useState<string | null>(requestedGroupHikeId ?? null);
+  const [activeGroupHikeTitle, setActiveGroupHikeTitle] = useState<string | null>(requestedGroupHikeTitle ?? null);
+
+  useEffect(() => {
+    if (requestedGroupHikeId) {
+      setActiveGroupHikeId(requestedGroupHikeId);
+      setActiveGroupHikeTitle(requestedGroupHikeTitle ?? null);
+    }
+  }, [requestedGroupHikeId, requestedGroupHikeTitle]);
 
   const loadRouteFromDB = useCallback(async (sessionIdOverride?: string) => {
     try {
@@ -191,7 +211,7 @@ export default function TrackerScreen() {
 
     const { status: bgStatus } = await Location.requestBackgroundPermissionsAsync();
     if (bgStatus !== 'granted') {
-      throw new Error('백그라운드 위치 권한이 필요합니다. 산행 경로를 기록하려면 "항상 허용" 권한을 허용해주세요.');
+      throw new Error('백그라운드 위치 권한이 필요합니다. 덩산 경로를 기록하려면 "항상 허용" 권한을 허용해주세요.');
     }
   }, []);
 
@@ -206,7 +226,7 @@ export default function TrackerScreen() {
     setRouteCoordinates([]);
     setPhotos([]);
     setElevationGain(0);
-    setErrorMsg('등산 시작 준비가 완료되었습니다.');
+    setErrorMsg('덩산 시작 준비가 완료되었습니다.');
   }, [requestTrackingPermissions]);
 
   useEffect(() => {
@@ -231,7 +251,7 @@ export default function TrackerScreen() {
           await requestTrackingPermissions();
         } catch (error) {
           if (!isMounted) return;
-          setErrorMsg(error instanceof Error ? error.message : '진행 중인 산행을 복원하려면 위치 권한이 필요합니다.');
+          setErrorMsg(error instanceof Error ? error.message : '진행 중인 덩산을 복원하려면 위치 권한이 필요합니다.');
           await setCurrentSessionId('');
           currentSessionIdRef.current = '';
           setRouteCoordinates([]);
@@ -255,6 +275,8 @@ export default function TrackerScreen() {
           sessionStartRef.current = activeSession
             ? new Date(activeSession.started_at).toISOString()
             : null;
+          setActiveGroupHikeId(activeSession?.group_hike_id ?? null);
+          setActiveGroupHikeTitle(activeSession?.group_hike_title ?? null);
 
           setIsTracking(true);
           await loadRouteFromDB(activeSessionId);
@@ -268,6 +290,8 @@ export default function TrackerScreen() {
           sessionStartRef.current = activeSession
             ? new Date(activeSession.started_at).toISOString()
             : null;
+          setActiveGroupHikeId(activeSession?.group_hike_id ?? null);
+          setActiveGroupHikeTitle(activeSession?.group_hike_title ?? null);
 
           setIsTracking(true);
           await loadRouteFromDB(activeSessionId);
@@ -277,6 +301,8 @@ export default function TrackerScreen() {
         } else if (activeSessionId && !isTaskRunning) {
           await setCurrentSessionId('');
           currentSessionIdRef.current = '';
+          setActiveGroupHikeId(requestedGroupHikeId ?? null);
+          setActiveGroupHikeTitle(requestedGroupHikeTitle ?? null);
           setRouteCoordinates([]);
           setPhotos([]);
           setElevationGain(0);
@@ -296,7 +322,16 @@ export default function TrackerScreen() {
       stopRouteRefresh();
       stopElapsedTimer();
     };
-  }, [loadRouteFromDB, prepareTrackingLocation, requestTrackingPermissions, startElapsedTimer, startForegroundTracking, startRouteRefresh]);
+  }, [
+    loadRouteFromDB,
+    prepareTrackingLocation,
+    requestTrackingPermissions,
+    requestedGroupHikeId,
+    requestedGroupHikeTitle,
+    startElapsedTimer,
+    startForegroundTracking,
+    startRouteRefresh,
+  ]);
 
   const handleSync = async () => {
     setIsSyncing(true);
@@ -351,7 +386,7 @@ export default function TrackerScreen() {
           });
           console.log('[WeatherFairy] 날씨 점수 저장됨:', safety.score);
         } catch (e) {
-          weatherNotice = '\n\n날씨 지수 저장 실패: 산행 기록은 정상 저장되었습니다.';
+          weatherNotice = '\n\n날씨 지수 저장 실패: 덩산 기록은 정상 저장되었습니다.';
           console.warn('[WeatherFairy] 날씨 점수 저장 실패:', e);
         }
       }
@@ -360,13 +395,25 @@ export default function TrackerScreen() {
         ? await loadSessionSummary(sessionId)
         : { elevationGain, photoCount: photos.length };
 
+      if (activeGroupHikeId && sessionId) {
+        const { error: groupFinishError } = await supabase.rpc('finish_group_hike_recording', {
+          p_hike_id: activeGroupHikeId,
+          p_local_session_id: sessionId,
+        });
+        if (groupFinishError) {
+          weatherNotice += `\n\n그룹 덩산 완료 상태 저장 실패: ${groupFinishError.message}`;
+        }
+      }
+
       sessionStartRef.current = null;
+      setActiveGroupHikeId(requestedGroupHikeId ?? null);
+      setActiveGroupHikeTitle(requestedGroupHikeTitle ?? null);
       setRouteCoordinates([]);
       setPhotos([]);
       setElevationGain(0);
       setElapsedSeconds(0);
       Alert.alert(
-        '산행 종료',
+        '덩산 종료',
         `누적 상승 ${Math.floor(sessionSummary.elevationGain)}m, 사진 ${sessionSummary.photoCount}장으로 기록을 마쳤습니다.${weatherNotice}`,
         [
           { text: '계속 보기', style: 'cancel' },
@@ -374,7 +421,7 @@ export default function TrackerScreen() {
         ],
       );
     } catch (error) {
-      Alert.alert('종료 실패', error instanceof Error ? error.message : '산행 종료 중 문제가 발생했습니다.');
+      Alert.alert('종료 실패', error instanceof Error ? error.message : '덩산 종료 중 문제가 발생했습니다.');
     } finally {
       setIsTrackingAction(false);
     }
@@ -385,15 +432,22 @@ export default function TrackerScreen() {
 
     setIsTrackingAction(true);
     let newSessionId = '';
+    const groupHikeIdForSession = requestedGroupHikeId ?? activeGroupHikeId;
+    const groupHikeTitleForSession = requestedGroupHikeTitle ?? activeGroupHikeTitle;
 
     try {
       setErrorMsg(null);
       await requestTrackingPermissions();
 
-      newSessionId = await createSession();
+      newSessionId = await createSession({
+        groupHikeId: groupHikeIdForSession,
+        groupHikeTitle: groupHikeTitleForSession,
+      });
       currentSessionIdRef.current = newSessionId;
       await setCurrentSessionId(newSessionId);
       sessionStartRef.current = new Date().toISOString();
+      setActiveGroupHikeId(groupHikeIdForSession ?? null);
+      setActiveGroupHikeTitle(groupHikeTitleForSession ?? null);
       setElapsedSeconds(0);
       console.log('[Tracker] 새 세션 시작:', newSessionId);
 
@@ -423,10 +477,18 @@ export default function TrackerScreen() {
           distanceInterval: 5,
           foregroundService: {
             notificationTitle: '덩산',
-            notificationBody: '산행 경로를 백그라운드에서 기록 중입니다.',
+            notificationBody: '덩산 경로를 백그라운드에서 기록 중입니다.',
             notificationColor: '#2ECC71',
           },
         });
+      }
+
+      if (groupHikeIdForSession) {
+        const { error: groupStartError } = await supabase.rpc('start_group_hike_recording', {
+          p_hike_id: groupHikeIdForSession,
+          p_local_session_id: newSessionId,
+        });
+        if (groupStartError) throw groupStartError;
       }
 
       setIsTracking(true);
@@ -442,11 +504,13 @@ export default function TrackerScreen() {
       }
       currentSessionIdRef.current = '';
       await setCurrentSessionId('');
+      setActiveGroupHikeId(requestedGroupHikeId ?? null);
+      setActiveGroupHikeTitle(requestedGroupHikeTitle ?? null);
       setIsTracking(false);
       stopElapsedTimer();
       setElapsedSeconds(0);
-      setErrorMsg(error instanceof Error ? error.message : '산행 시작 중 문제가 발생했습니다.');
-      Alert.alert('시작 실패', error instanceof Error ? error.message : '산행 시작 중 문제가 발생했습니다.');
+      setErrorMsg(error instanceof Error ? error.message : '덩산 시작 중 문제가 발생했습니다.');
+      Alert.alert('시작 실패', error instanceof Error ? error.message : '덩산 시작 중 문제가 발생했습니다.');
     } finally {
       setIsTrackingAction(false);
     }
@@ -511,11 +575,15 @@ export default function TrackerScreen() {
 
   const currentAltitude = location?.coords?.altitude ? Math.floor(location.coords.altitude) : 0;
   const elapsedTime = formatElapsedTime(elapsedSeconds);
+  const headerTitle = activeGroupHikeTitle ?? '덩산 트래커';
 
   return (
     <View style={[styles.container, { backgroundColor: theme.background }]}>
       <View style={[styles.header, { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }]}>
-        <Text style={[styles.title, { color: theme.text }]}>등산 트래커</Text>
+        <View style={styles.titleBox}>
+          {activeGroupHikeTitle ? <Text style={styles.groupTrackerLabel}>그룹 덩산</Text> : null}
+          <Text style={[styles.title, { color: theme.text }]} numberOfLines={1}>{headerTitle}</Text>
+        </View>
         <View style={{ flexDirection: 'row', alignItems: 'center' }}>
           <WeatherBadge
             lat={location?.coords.latitude}
@@ -580,7 +648,7 @@ export default function TrackerScreen() {
           disabled={isTrackingAction || startCountdown !== null}
         >
           <Text style={styles.buttonText}>
-            {isTrackingAction ? '처리 중...' : startCountdown !== null ? '곧 시작...' : isTracking ? '등산 종료' : '등산 시작'}
+            {isTrackingAction ? '처리 중...' : startCountdown !== null ? '곧 시작...' : isTracking ? '덩산 종료' : '덩산 시작'}
           </Text>
         </TouchableOpacity>
       </View>
@@ -596,6 +664,16 @@ const styles = StyleSheet.create({
     padding: 20,
     paddingTop: 60,
     alignItems: 'center',
+  },
+  titleBox: {
+    flex: 1,
+    paddingRight: 12,
+  },
+  groupTrackerLabel: {
+    color: '#1DB954',
+    fontSize: 12,
+    fontWeight: '800',
+    marginBottom: 2,
   },
   title: {
     fontSize: 24,

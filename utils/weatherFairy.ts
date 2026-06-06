@@ -1,5 +1,5 @@
 // 날씨요정 지수 계산 엔진
-// 컨셉: "내가 참석한 산행"의 날씨가 "전체 산행 평균"보다 얼마나 좋은지 정량화
+// 컨셉: "내가 참석한 덩산"의 날씨가 "전체 덩산 평균"보다 얼마나 좋은지 정량화
 // Supabase RLS/schema note:
 // - hike_sessions INSERT/SELECT must be scoped by auth.uid() = user_id for personal rows.
 // - Global comparison should use the get_weather_fairy_stats RPC or an aggregate view
@@ -29,8 +29,8 @@ export type WeatherFairyBadge =
 
 export interface WeatherFairyResult {
   index: number;           // 날씨요정 지수 (50 기준: 높을수록 날씨요정)
-  userAvg: number;         // 내 산행 날씨 평균
-  globalAvg: number;       // 전체 산행 날씨 평균
+  userAvg: number;         // 내 덩산 날씨 평균
+  globalAvg: number;       // 전체 덩산 날씨 평균
   mySessionCount: number;  // 내 참석 횟수
   totalSessionCount: number;
   badge: WeatherFairyBadge | null;
@@ -46,7 +46,7 @@ type WeatherFairyStats = {
 
 // 날씨요정 지수 공식:
 //   index = (내 평균 날씨 점수) - (전체 평균) + 50
-//   50 = 평균 수준, 50 이상이면 남들보다 날씨가 좋을 때 산행
+//   50 = 평균 수준, 50 이상이면 남들보다 날씨가 좋을 때 덩산
 //
 // 뱃지 기준 (관대하게 설정 — 쉽게 받을 수 있도록):
 //   >= 42: 새싹 날씨요정 🌱 (평균보다 8점 낮아도 OK!)
@@ -69,7 +69,7 @@ export function calculateWeatherFairyIndex(
       badge: null,
       badgeLabel: '아직 없음',
       badgeEmoji: '—',
-      description: '산행에 참석하면 날씨요정 지수를 계산할 수 있어요!',
+      description: '덩산에 참석하면 날씨요정 지수를 계산할 수 있어요!',
     };
   }
 
@@ -148,7 +148,7 @@ export function calculateWeatherFairyIndex(
   };
 }
 
-// Supabase에 산행 세션 저장
+// Supabase에 덩산 세션 저장
 export async function saveHikeSession(session: Omit<HikeSession, 'id'>): Promise<void> {
   const { error } = await supabase.from(SUPABASE_TABLES.HIKE_SESSIONS).insert(session);
   if (error) {
@@ -157,7 +157,7 @@ export async function saveHikeSession(session: Omit<HikeSession, 'id'>): Promise
   }
 }
 
-// 내 산행 세션 조회
+// 내 덩산 세션 조회
 export async function fetchMySessions(userId: string): Promise<HikeSession[]> {
   const { data, error } = await supabase
     .from(SUPABASE_TABLES.HIKE_SESSIONS)

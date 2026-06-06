@@ -3,7 +3,7 @@ import {
   View, Text, ScrollView, StyleSheet, TouchableOpacity,
   ActivityIndicator, Image, Dimensions, FlatList,
 } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import { FontAwesome } from '@expo/vector-icons';
 import NativeMapView, { Polyline, Marker, PROVIDER_GOOGLE } from 'react-native-maps';
@@ -61,6 +61,9 @@ interface SessionSummary {
 // ─── 개별 세션 카드 컴포넌트 ─────────────────────────────────────────────────
 const MIN_MAP_DELTA = 0.01;
 const PAGE_SIZE = 10;
+const getParamString = (value: string | string[] | undefined) => (
+  Array.isArray(value) ? value[0] : value
+);
 
 const SessionCard = React.memo(({ data, isDark, theme, onReturnToTracker }: {
   data: SessionSummary;
@@ -128,7 +131,7 @@ const SessionCard = React.memo(({ data, isDark, theme, onReturnToTracker }: {
     { label: '누적 상승', value: `${Math.floor(elevationGain)}m`, icon: 'arrow-up', color: '#1DB954' },
     { label: '최고 고도', value: `${Math.floor(maxAlt)}m`, icon: 'flag', color: '#E67E22' },
     { label: '환산 층수', value: `${floors}층`, icon: 'building', color: '#9B59B6' },
-    { label: '산행 시간', value: formatDuration(durationMs), icon: 'clock-o', color: '#E74C3C' },
+    { label: '덩산 시간', value: formatDuration(durationMs), icon: 'clock-o', color: '#E74C3C' },
     { label: '사진', value: `${photos.length}장`, icon: 'camera', color: '#1ABC9C' },
   ];
 
@@ -137,7 +140,7 @@ const SessionCard = React.memo(({ data, isDark, theme, onReturnToTracker }: {
       {isActive && (
         <View style={styles.activeSessionBanner}>
           <View>
-            <Text style={styles.activeSessionLabel}>진행 중인 산행</Text>
+            <Text style={styles.activeSessionLabel}>진행 중인 덩산</Text>
             <Text style={styles.activeSessionText}>현재 트래킹 세션이 아직 종료되지 않았습니다.</Text>
           </View>
           <TouchableOpacity style={styles.activeSessionBtn} onPress={onReturnToTracker}>
@@ -151,6 +154,9 @@ const SessionCard = React.memo(({ data, isDark, theme, onReturnToTracker }: {
         <View style={styles.sessionDateRow}>
           <View style={[styles.sessionDot, { backgroundColor: theme.tint }]} />
           <View>
+            {session.group_hike_title ? (
+              <Text style={styles.groupSessionTitle} numberOfLines={1}>{session.group_hike_title}</Text>
+            ) : null}
             <Text style={[styles.sessionDate, { color: theme.text }]}>{formatDate(session.started_at)}</Text>
             <Text style={styles.sessionTime}>
               {formatTime(session.started_at)}
@@ -235,9 +241,15 @@ SessionCard.displayName = 'SessionCard';
 // ─── 메인 화면 ────────────────────────────────────────────────────────────────
 export default function RecordsScreen() {
   const router = useRouter();
+  const params = useLocalSearchParams<{
+    groupHikeId?: string;
+    groupHikeTitle?: string;
+  }>();
   const colorScheme = useColorScheme();
   const theme = Colors[colorScheme ?? 'light'];
   const isDark = colorScheme === 'dark';
+  const groupHikeId = getParamString(params.groupHikeId);
+  const groupHikeTitle = getParamString(params.groupHikeTitle);
 
   const [loading, setLoading] = useState(true);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
@@ -247,14 +259,17 @@ export default function RecordsScreen() {
     (async () => {
       try {
         const rawSessions = await getAllSessions(); // 최신순
-        setSessions(rawSessions.map((session) => ({ session })));
+        const filteredSessions = groupHikeId
+          ? rawSessions.filter((session) => session.group_hike_id === groupHikeId)
+          : rawSessions;
+        setSessions(filteredSessions.map((session) => ({ session })));
       } catch (e) {
         console.error('[Records]', e);
       } finally {
         setLoading(false);
       }
     })();
-  }, []);
+  }, [groupHikeId]);
 
   return (
     <View style={[styles.container, { backgroundColor: isDark ? '#000' : '#F8F9FA' }]}>
@@ -264,9 +279,9 @@ export default function RecordsScreen() {
           <FontAwesome name="chevron-left" size={16} color="#FFF" />
           <Text style={styles.backText}>홈</Text>
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>내 산행 기록</Text>
+        <Text style={styles.headerTitle}>{groupHikeId ? '그룹 덩산 기록' : '내 덩산 기록'}</Text>
         <Text style={styles.headerSub}>
-          {loading ? '불러오는 중...' : sessions.length > 0 ? `총 ${sessions.length}회 산행` : '기록된 산행이 없습니다'}
+          {loading ? '불러오는 중...' : groupHikeTitle ?? (sessions.length > 0 ? `총 ${sessions.length}회 덩산` : '기록된 덩산이 없습니다')}
         </Text>
       </LinearGradient>
 
@@ -277,8 +292,8 @@ export default function RecordsScreen() {
       ) : sessions.length === 0 ? (
         <View style={styles.empty}>
           <Text style={styles.emptyEmoji}>🏔️</Text>
-          <Text style={[styles.emptyTitle, { color: theme.text }]}>아직 산행 기록이 없어요</Text>
-          <Text style={styles.emptyDesc}>트래킹 탭에서 산행을 시작해보세요!</Text>
+          <Text style={[styles.emptyTitle, { color: theme.text }]}>아직 덩산 기록이 없어요</Text>
+          <Text style={styles.emptyDesc}>트래킹 탭에서 덩산을 시작해보세요!</Text>
           <TouchableOpacity
             style={[styles.groupBanner, { marginTop: 24 }]}
             onPress={() => router.push('/(tabs)/groups')}
@@ -286,7 +301,7 @@ export default function RecordsScreen() {
           >
             <LinearGradient colors={['#1DB954', '#0a8a3e']} style={styles.groupBannerGradient}>
               <Text style={styles.groupBannerEmoji}>👥</Text>
-              <Text style={styles.groupBannerTitle}>그룹 산행 기록 보기</Text>
+              <Text style={styles.groupBannerTitle}>그룹 덩산 기록 보기</Text>
               <FontAwesome name="chevron-right" size={13} color="rgba(255,255,255,0.7)" />
             </LinearGradient>
           </TouchableOpacity>
@@ -327,8 +342,8 @@ export default function RecordsScreen() {
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, flex: 1 }}>
                     <Text style={styles.groupBannerEmoji}>👥</Text>
                     <View>
-                      <Text style={styles.groupBannerTitle}>그룹 산행 기록</Text>
-                      <Text style={styles.groupBannerSub}>크루원들과 함께한 산행을 확인하세요</Text>
+                      <Text style={styles.groupBannerTitle}>그룹 덩산 기록</Text>
+                      <Text style={styles.groupBannerSub}>크루원들과 함께한 덩산을 확인하세요</Text>
                     </View>
                   </View>
                   <View style={styles.groupBannerRight}>
@@ -370,6 +385,7 @@ const styles = StyleSheet.create({
   sessionCardHead: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 16 },
   sessionDateRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   sessionDot: { width: 10, height: 10, borderRadius: 5 },
+  groupSessionTitle: { maxWidth: width - 180, color: '#1DB954', fontSize: 12, fontWeight: '800', marginBottom: 2 },
   sessionDate: { fontSize: 15, fontWeight: '800' },
   sessionTime: { fontSize: 12, color: '#999', marginTop: 2 },
   sessionQuickStats: { flexDirection: 'row', alignItems: 'center', gap: 4 },

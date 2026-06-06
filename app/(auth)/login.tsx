@@ -186,7 +186,7 @@ export default function LoginScreen() {
           <View style={styles.logoArea}>
             <Text style={styles.logoEmoji}>⛰️</Text>
             <Text style={styles.logoTitle}>덩산</Text>
-            <Text style={styles.logoSubtitle}>근엄한 등산은 가라.</Text>
+            <Text style={styles.logoSubtitle}>근엄한 덩산은 가라.</Text>
           </View>
         </LinearGradient>
 

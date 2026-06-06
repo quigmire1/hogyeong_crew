@@ -28,11 +28,13 @@ export type SessionRecord = {
   started_at: number; // unix ms
   ended_at: number;   // unix ms
   synced?: number;
+  group_hike_id?: string | null;
+  group_hike_title?: string | null;
 };
 
 const DB_NAME = 'hogyeong_crew.db';
 let _db: SQLite.SQLiteDatabase | null = null;
-const CURRENT_SCHEMA_VERSION = 4;
+const CURRENT_SCHEMA_VERSION = 5;
 
 const getDB = () => {
   if (!_db) {
@@ -166,6 +168,18 @@ const runMigrations = (db: SQLite.SQLiteDatabase) => {
       db.execSync(`ALTER TABLE photos ADD COLUMN public_url TEXT;`);
     }
   });
+
+  runMigration(db, 5, () => {
+    if (!columnExists(db, 'sessions', 'group_hike_id')) {
+      db.execSync(`ALTER TABLE sessions ADD COLUMN group_hike_id TEXT;`);
+    }
+
+    if (!columnExists(db, 'sessions', 'group_hike_title')) {
+      db.execSync(`ALTER TABLE sessions ADD COLUMN group_hike_title TEXT;`);
+    }
+
+    db.execSync(`CREATE INDEX IF NOT EXISTS idx_sessions_group_hike_id ON sessions (group_hike_id);`);
+  });
 };
 
 export const initDB = async () => {
@@ -183,10 +197,20 @@ export const initDB = async () => {
 
 // ─── Session ─────────────────────────────────────────────────────────────────
 
-export const createSession = async (): Promise<string> => {
+export const createSession = async (metadata?: {
+  groupHikeId?: string | null;
+  groupHikeTitle?: string | null;
+}): Promise<string> => {
   const db = getDB();
   const id = Crypto.randomUUID();
-  db.runSync('INSERT INTO sessions (id, started_at, ended_at) VALUES (?, ?, ?)', id, Date.now(), 0);
+  db.runSync(
+    'INSERT INTO sessions (id, started_at, ended_at, group_hike_id, group_hike_title) VALUES (?, ?, ?, ?, ?)',
+    id,
+    Date.now(),
+    0,
+    metadata?.groupHikeId ?? null,
+    metadata?.groupHikeTitle ?? null,
+  );
   return id;
 };
 

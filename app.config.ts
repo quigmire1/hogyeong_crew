@@ -72,9 +72,9 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     [
       "expo-location",
       {
-        "locationAlwaysAndWhenInUsePermission": "백그라운드에서 산행 기록을 저장하고 분석하기 위해 항상 위치 권한이 필요합니다.",
-        "locationAlwaysPermission": "산행 중 앱이 백그라운드에 있을 때도 경로를 기록하기 위해 위치 권한이 필요합니다.",
-        "locationWhenInUsePermission": "산행 경로를 지도에 표시하기 위해 위치 권한이 필요합니다.",
+        "locationAlwaysAndWhenInUsePermission": "백그라운드에서 덩산 기록을 저장하고 분석하기 위해 항상 위치 권한이 필요합니다.",
+        "locationAlwaysPermission": "덩산 중 앱이 백그라운드에 있을 때도 경로를 기록하기 위해 위치 권한이 필요합니다.",
+        "locationWhenInUsePermission": "덩산 경로를 지도에 표시하기 위해 위치 권한이 필요합니다.",
         "isIosBackgroundLocationEnabled": true,
         "isAndroidBackgroundLocationEnabled": true
       }
@@ -82,8 +82,8 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     [
       "expo-image-picker",
       {
-        "photosPermission": "등산 중 촬영한 사진을 지도에 표시하기 위해 갤러리 권한이 필요합니다.",
-        "cameraPermission": "등산 중 풍경을 촬영하여 지도에 표시하기 위해 카메라 권한이 필요합니다."
+        "photosPermission": "덩산 중 촬영한 사진을 지도에 표시하기 위해 갤러리 권한이 필요합니다.",
+        "cameraPermission": "덩산 중 풍경을 촬영하여 지도에 표시하기 위해 카메라 권한이 필요합니다."
       }
     ]
   ],

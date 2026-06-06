@@ -83,14 +83,14 @@ export default function HomeScreen() {
             onPress={() => router.push('/(tabs)/tracker')}
           >
             <FontAwesome name="play" size={14} color="#1DB954" />
-            <Text style={styles.startButtonText}>산행 시작</Text>
+            <Text style={styles.startButtonText}>덩산 시작</Text>
           </TouchableOpacity>
         </View>
 
         <View style={styles.quickStats}>
           <View style={styles.quickStat}>
             <Text style={styles.quickStatValue}>{stats.sessions}</Text>
-            <Text style={styles.quickStatLabel}>산행 세션</Text>
+            <Text style={styles.quickStatLabel}>덩산 세션</Text>
           </View>
           <View style={styles.statDivider} />
           <View style={styles.quickStat}>
@@ -113,7 +113,7 @@ export default function HomeScreen() {
         </View>
         <WeatherWidget />
 
-        {/* 산행 기록 메뉴 */}
+        {/* 덩산 기록 메뉴 */}
         <TouchableOpacity
           style={styles.recordBanner}
           onPress={() => router.push('/records')}
@@ -124,7 +124,7 @@ export default function HomeScreen() {
               <FontAwesome name="history" size={20} color="#1DB954" />
             </View>
             <View>
-              <Text style={styles.recordBannerTitle}>내 산행 기록</Text>
+              <Text style={styles.recordBannerTitle}>내 덩산 기록</Text>
               <Text style={styles.recordBannerSub}>경로 지도 · 고도 · 사진 · 그룹 기록</Text>
             </View>
           </View>

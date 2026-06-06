@@ -116,7 +116,7 @@ export function evaluateHikingSafety(w: WeatherData): SafetyResult {
 
   // 2. 풍속 체크
   if (w.windSpeed >= 14) {
-    reasons.push(`💨 강풍 (${w.windSpeed.toFixed(1)}m/s) — 능선 등산 위험`);
+    reasons.push(`💨 강풍 (${w.windSpeed.toFixed(1)}m/s) — 능선 덩산 위험`);
     deduction += 30;
   } else if (w.windSpeed >= 9) {
     reasons.push(`🌬️ 강한 바람 (${w.windSpeed.toFixed(1)}m/s) — 주의 필요`);
@@ -128,13 +128,13 @@ export function evaluateHikingSafety(w: WeatherData): SafetyResult {
 
   // 3. 돌풍 체크
   if (w.windGust && w.windGust >= 17) {
-    reasons.push(`⚡ 돌풍 (${w.windGust.toFixed(1)}m/s) — 산행 매우 위험`);
+    reasons.push(`⚡ 돌풍 (${w.windGust.toFixed(1)}m/s) — 덩산 매우 위험`);
     deduction += 20;
   }
 
   // 4. 강수 체크
   if (w.rain1h && w.rain1h > 10) {
-    reasons.push(`🌧️ 강우 (${w.rain1h}mm/h) — 산행 불가 수준`);
+    reasons.push(`🌧️ 강우 (${w.rain1h}mm/h) — 덩산 불가 수준`);
     deduction += 40;
   } else if (w.rain1h && w.rain1h > 0) {
     reasons.push(`🌦️ 강수 (${w.rain1h}mm/h) — 미끄럼 주의`);
@@ -169,15 +169,15 @@ export function evaluateHikingSafety(w: WeatherData): SafetyResult {
 
   if (score >= 75) {
     level = 'safe';
-    recommendation = '오늘은 등산하기 좋은 날입니다! 즐거운 산행 되세요 🏔️';
+    recommendation = '오늘은 덩산하기 좋은 날입니다! 즐거운 덩산 되세요 🏔️';
     emoji = '✅';
   } else if (score >= 45) {
     level = 'caution';
-    recommendation = '등산 가능하나 주의가 필요합니다. 장비를 꼼꼼히 챙기세요 ⚠️';
+    recommendation = '덩산 가능하나 주의가 필요합니다. 장비를 꼼꼼히 챙기세요 ⚠️';
     emoji = '⚠️';
   } else {
     level = 'danger';
-    recommendation = '현재 기상 상태로 등산은 위험합니다. 일정을 재고하세요 🚫';
+    recommendation = '현재 기상 상태로 덩산은 위험합니다. 일정을 재고하세요 🚫';
     emoji = '🚫';
   }
 
