@@ -86,12 +86,19 @@ interface HikeParticipant {
   avatar_url: string | null;
 }
 
-const formatMeetingAt = (iso: string) => {
+const formatMeetingDate = (iso: string) => {
   if (!iso) return '';
-  return new Date(iso).toLocaleString('ko-KR', {
+  return new Date(iso).toLocaleDateString('ko-KR', {
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
+    weekday: 'short',
+  });
+};
+
+const formatMeetingTime = (iso: string) => {
+  if (!iso) return '';
+  return new Date(iso).toLocaleTimeString('ko-KR', {
     hour: '2-digit',
     minute: '2-digit',
   });
@@ -127,11 +134,14 @@ export default function GroupsScreen() {
   const [createGroupModal, setCreateGroupModal] = useState(false);
   const [joinGroupModal, setJoinGroupModal] = useState(false);
   const [createHikeModal, setCreateHikeModal] = useState(false);
+  const [editHikeModal, setEditHikeModal] = useState(false);
   const [isCreatingGroup, setIsCreatingGroup] = useState(false);
   const [isJoiningGroup, setIsJoiningGroup] = useState(false);
   const [isCreatingHike, setIsCreatingHike] = useState(false);
+  const [isUpdatingHike, setIsUpdatingHike] = useState(false);
   const [attendanceActionHikeId, setAttendanceActionHikeId] = useState<string | null>(null);
   const [deletingHikeId, setDeletingHikeId] = useState<string | null>(null);
+  const [editingHike, setEditingHike] = useState<GroupHike | null>(null);
   const [participantModalVisible, setParticipantModalVisible] = useState(false);
   const [participantModalHeading, setParticipantModalHeading] = useState('');
   const [participantModalTitle, setParticipantModalTitle] = useState('');
@@ -145,9 +155,12 @@ export default function GroupsScreen() {
   const [newHike, setNewHike] = useState({
     title: '', mountain_name: '', meeting_at: '', meeting_point: '', description: '',
   });
+  const [editHike, setEditHike] = useState({
+    title: '', mountain_name: '', meeting_at: '', meeting_point: '', description: '',
+  });
   const [isDatePickerVisible, setDatePickerVisibility] = useState(false);
+  const [datePickerTarget, setDatePickerTarget] = useState<'create' | 'edit'>('create');
   const [pickerMode, setPickerMode] = useState<'date' | 'time'>('date');
-  const [tempDate, setTempDate] = useState<Date | null>(null);
 
   const currentUserDisplayName = user?.user_metadata?.full_name
     ?? user?.user_metadata?.name
@@ -157,6 +170,98 @@ export default function GroupsScreen() {
   const currentUserAvatarUrl = user?.user_metadata?.avatar_url
     ?? user?.user_metadata?.picture
     ?? null;
+
+  const getDatePickerBaseDate = (target: 'create' | 'edit') => {
+    const rawDate = target === 'edit' ? editHike.meeting_at : newHike.meeting_at;
+    const parsedDate = rawDate ? new Date(rawDate) : new Date();
+    return Number.isNaN(parsedDate.getTime()) ? new Date() : parsedDate;
+  };
+
+  const openHikeDatePicker = (target: 'create' | 'edit', mode: 'date' | 'time') => {
+    setDatePickerTarget(target);
+    setPickerMode(mode);
+    setDatePickerVisibility(true);
+  };
+
+  const closeHikeDatePicker = () => {
+    setDatePickerVisibility(false);
+  };
+
+  const setHikeMeetingAt = (target: 'create' | 'edit', meetingAt: Date) => {
+    if (target === 'edit') {
+      setEditHike((prev) => ({ ...prev, meeting_at: meetingAt.toISOString() }));
+    } else {
+      setNewHike((prev) => ({ ...prev, meeting_at: meetingAt.toISOString() }));
+    }
+  };
+
+  const handleConfirmHikeDate = (target: 'create' | 'edit', mode: 'date' | 'time', date: Date) => {
+    setDatePickerVisibility(false);
+    const meetingAt = getDatePickerBaseDate(target);
+
+    if (mode === 'date') {
+      meetingAt.setFullYear(date.getFullYear(), date.getMonth(), date.getDate());
+    } else {
+      meetingAt.setHours(date.getHours(), date.getMinutes(), 0, 0);
+    }
+
+    setHikeMeetingAt(target, meetingAt);
+  };
+
+  const renderHikeDatePicker = (target: 'create' | 'edit') => (
+    <DateTimePickerModal
+      isVisible={isDatePickerVisible && datePickerTarget === target}
+      mode={pickerMode}
+      date={getDatePickerBaseDate(target)}
+      display={pickerMode === 'date' ? 'inline' : 'spinner'}
+      minuteInterval={5}
+      onConfirm={(date) => handleConfirmHikeDate(target, pickerMode, date)}
+      onCancel={closeHikeDatePicker}
+      confirmTextIOS="확인"
+      cancelTextIOS="취소"
+    />
+  );
+
+  const renderHikeDateTimeButtons = (target: 'create' | 'edit', meetingAt: string) => {
+    const placeholderColor = isDark ? '#555' : '#AAA';
+    const valueColor = theme.text as string;
+
+    return (
+      <View style={styles.dateTimeRow}>
+        <TouchableOpacity
+          style={[
+            styles.dateTimeButton,
+            { borderColor: isDark ? '#333' : '#EEE', backgroundColor: isDark ? '#2A2A2A' : '#FAFAFA' },
+          ]}
+          onPress={() => openHikeDatePicker(target, 'date')}
+        >
+          <FontAwesome name="calendar" size={14} color={meetingAt ? theme.tint : placeholderColor} />
+          <Text
+            style={[styles.dateTimeButtonText, { color: meetingAt ? valueColor : placeholderColor }]}
+            numberOfLines={1}
+          >
+            {meetingAt ? formatMeetingDate(meetingAt) : '날짜 선택'}
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[
+            styles.dateTimeButton,
+            { borderColor: isDark ? '#333' : '#EEE', backgroundColor: isDark ? '#2A2A2A' : '#FAFAFA' },
+          ]}
+          onPress={() => openHikeDatePicker(target, 'time')}
+        >
+          <FontAwesome name="clock-o" size={14} color={meetingAt ? theme.tint : placeholderColor} />
+          <Text
+            style={[styles.dateTimeButtonText, { color: meetingAt ? valueColor : placeholderColor }]}
+            numberOfLines={1}
+          >
+            {meetingAt ? formatMeetingTime(meetingAt) : '시간 선택'}
+          </Text>
+        </TouchableOpacity>
+      </View>
+    );
+  };
 
   // ─── Data Fetching ──────────────────────────────────────────────────────────
 
@@ -423,6 +528,56 @@ export default function GroupsScreen() {
     }
   };
 
+  const handleOpenEditHike = (hike: GroupHike) => {
+    if (hike.creator_id !== user?.id) {
+      Alert.alert('수정 불가', '산행 생성자만 일정을 수정할 수 있습니다.');
+      return;
+    }
+
+    setEditingHike(hike);
+    setEditHike({
+      title: hike.title ?? '',
+      mountain_name: hike.mountain_name ?? '',
+      meeting_at: hike.meeting_at ?? '',
+      meeting_point: hike.meeting_point ?? '',
+      description: hike.description ?? '',
+    });
+    setEditHikeModal(true);
+  };
+
+  const handleUpdateHike = async () => {
+    if (isUpdatingHike || !editingHike) return;
+    if (!editHike.title || !editHike.meeting_at) { Alert.alert('알림', '제목과 일시는 필수입니다.'); return; }
+    if (!user?.id) { Alert.alert('로그인 필요', '산행을 수정하려면 로그인이 필요합니다.'); return; }
+
+    setIsUpdatingHike(true);
+    try {
+      const { error } = await supabase
+        .from('group_hikes')
+        .update({
+          title: editHike.title.trim(),
+          mountain_name: editHike.mountain_name.trim() || null,
+          meeting_at: editHike.meeting_at,
+          meeting_point: editHike.meeting_point.trim() || null,
+          description: editHike.description.trim() || null,
+        })
+        .eq('id', editingHike.id)
+        .eq('creator_id', user.id)
+        .select('id')
+        .single();
+      if (error) throw error;
+
+      setEditHikeModal(false);
+      setEditingHike(null);
+      setEditHike({ title: '', mountain_name: '', meeting_at: '', meeting_point: '', description: '' });
+      refreshSelectedGroupHikes();
+    } catch (e: any) {
+      Alert.alert('오류', e.message);
+    } finally {
+      setIsUpdatingHike(false);
+    }
+  };
+
   const handleAttendHike = async (hike: GroupHike) => {
     if (attendanceActionHikeId || !user?.id) return;
 
@@ -590,19 +745,29 @@ export default function GroupsScreen() {
           {!isCompleted && (
             <View style={styles.hikeActionRow}>
               {isCreator && (
-                <TouchableOpacity
-                  style={[styles.hikeActionButton, styles.deleteHikeButton, isDeleting && styles.submitBtnDisabled]}
-                  onPress={() => handleDeleteHike(item)}
-                  disabled={isDeleting || Boolean(attendanceActionHikeId)}
-                >
-                  {isDeleting
-                    ? <ActivityIndicator size="small" color="#FF4B4B" />
-                    : <>
-                      <FontAwesome name="trash-o" size={13} color="#FF4B4B" />
-                      <Text style={styles.deleteHikeButtonText}>삭제</Text>
-                    </>
-                  }
-                </TouchableOpacity>
+                <>
+                  <TouchableOpacity
+                    style={[styles.hikeActionButton, styles.editHikeButton]}
+                    onPress={() => handleOpenEditHike(item)}
+                    disabled={isDeleting || isUpdatingHike || Boolean(attendanceActionHikeId)}
+                  >
+                    <FontAwesome name="pencil" size={13} color="#1DB954" />
+                    <Text style={styles.editHikeButtonText}>수정</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.hikeActionButton, styles.deleteHikeButton, isDeleting && styles.submitBtnDisabled]}
+                    onPress={() => handleDeleteHike(item)}
+                    disabled={isDeleting || isUpdatingHike || Boolean(attendanceActionHikeId)}
+                  >
+                    {isDeleting
+                      ? <ActivityIndicator size="small" color="#FF4B4B" />
+                      : <>
+                        <FontAwesome name="trash-o" size={13} color="#FF4B4B" />
+                        <Text style={styles.deleteHikeButtonText}>삭제</Text>
+                      </>
+                    }
+                  </TouchableOpacity>
+                </>
               )}
               <TouchableOpacity
                 style={[
@@ -690,44 +855,10 @@ export default function GroupsScreen() {
               <ScrollView>
                 <StyledInput placeholder="산행 제목" value={newHike.title} onChangeText={(t: string) => setNewHike({ ...newHike, title: t })} />
                 <StyledInput placeholder="산 이름" value={newHike.mountain_name} onChangeText={(t: string) => setNewHike({ ...newHike, mountain_name: t })} />
-                <TouchableOpacity
-                  style={[styles.input, { borderColor: isDark ? '#333' : '#EEE', backgroundColor: isDark ? '#2A2A2A' : '#FAFAFA', justifyContent: 'center' }]}
-                  onPress={() => {
-                    setPickerMode('date');
-                    setDatePickerVisibility(true);
-                  }}
-                >
-                  <Text style={{ color: newHike.meeting_at ? (theme.text as string) : (isDark ? '#555' : '#AAA'), fontSize: 15 }}>
-                    {newHike.meeting_at ? formatMeetingAt(newHike.meeting_at) : '일시 선택 (달력 및 시계)'}
-                  </Text>
-                </TouchableOpacity>
-                <DateTimePickerModal
-                  isVisible={isDatePickerVisible}
-                  mode={pickerMode}
-                  display={pickerMode === 'date' ? 'inline' : 'spinner'}
-                  minuteInterval={5}
-                  onConfirm={(date) => {
-                    if (pickerMode === 'date') {
-                      setTempDate(date);
-                      setPickerMode('time');
-                    } else {
-                      setDatePickerVisibility(false);
-                      const finalDate = tempDate || date;
-                      const meetingAt = new Date(finalDate);
-                      meetingAt.setHours(date.getHours(), date.getMinutes(), 0, 0);
-                      setNewHike({ ...newHike, meeting_at: meetingAt.toISOString() });
-                      setTempDate(null);
-                    }
-                  }}
-                  onCancel={() => {
-                    setDatePickerVisibility(false);
-                    setTempDate(null);
-                  }}
-                  confirmTextIOS="확인"
-                  cancelTextIOS="취소"
-                />
+                {renderHikeDateTimeButtons('create', newHike.meeting_at)}
                 <StyledInput placeholder="집결 장소" value={newHike.meeting_point} onChangeText={(t: string) => setNewHike({ ...newHike, meeting_point: t })} />
                 <StyledInput placeholder="상세 설명" multiline value={newHike.description} onChangeText={(t: string) => setNewHike({ ...newHike, description: t })} />
+                {renderHikeDatePicker('create')}
                 <TouchableOpacity
                   style={[styles.submitBtn, { backgroundColor: theme.tint }, isCreatingHike && styles.submitBtnDisabled]}
                   onPress={handleCreateHike}
@@ -736,6 +867,44 @@ export default function GroupsScreen() {
                   {isCreatingHike
                     ? <ActivityIndicator size="small" color="#FFF" />
                     : <Text style={styles.submitBtnText}>등록하기</Text>
+                  }
+                </TouchableOpacity>
+              </ScrollView>
+            </View>
+          </View>
+        </Modal>
+
+        {/* 산행 수정 모달 */}
+        <Modal visible={editHikeModal} animationType="slide" transparent>
+          <View style={styles.overlay}>
+            <View style={[styles.modalBox, { backgroundColor: isDark ? '#1A1A1A' : '#FFF' }]}>
+              <View style={styles.modalHead}>
+                <Text style={[styles.modalTitle, { color: theme.text }]}>산행 일정 수정</Text>
+                <TouchableOpacity
+                  onPress={() => {
+                    setEditHikeModal(false);
+                    setEditingHike(null);
+                  }}
+                  disabled={isUpdatingHike}
+                >
+                  <FontAwesome name="times" size={22} color={theme.text} />
+                </TouchableOpacity>
+              </View>
+              <ScrollView>
+                <StyledInput placeholder="산행 제목" value={editHike.title} onChangeText={(t: string) => setEditHike({ ...editHike, title: t })} />
+                <StyledInput placeholder="산 이름" value={editHike.mountain_name} onChangeText={(t: string) => setEditHike({ ...editHike, mountain_name: t })} />
+                {renderHikeDateTimeButtons('edit', editHike.meeting_at)}
+                <StyledInput placeholder="집결 장소" value={editHike.meeting_point} onChangeText={(t: string) => setEditHike({ ...editHike, meeting_point: t })} />
+                <StyledInput placeholder="상세 설명" multiline value={editHike.description} onChangeText={(t: string) => setEditHike({ ...editHike, description: t })} />
+                {renderHikeDatePicker('edit')}
+                <TouchableOpacity
+                  style={[styles.submitBtn, { backgroundColor: theme.tint }, isUpdatingHike && styles.submitBtnDisabled]}
+                  onPress={handleUpdateHike}
+                  disabled={isUpdatingHike}
+                >
+                  {isUpdatingHike
+                    ? <ActivityIndicator size="small" color="#FFF" />
+                    : <Text style={styles.submitBtnText}>수정하기</Text>
                   }
                 </TouchableOpacity>
               </ScrollView>
@@ -984,6 +1153,8 @@ const styles = StyleSheet.create({
   attendButtonText: { color: '#FFF', fontSize: 13, fontWeight: '800' },
   cancelAttendanceButton: { backgroundColor: '#F2F4F6' },
   cancelAttendanceButtonText: { color: '#666', fontSize: 13, fontWeight: '800' },
+  editHikeButton: { backgroundColor: '#E8F8EE', borderWidth: 1, borderColor: '#BFEACD' },
+  editHikeButtonText: { color: '#1DB954', fontSize: 13, fontWeight: '800' },
   deleteHikeButton: { backgroundColor: '#FFF2F2', borderWidth: 1, borderColor: '#FFD6D6' },
   deleteHikeButtonText: { color: '#FF4B4B', fontSize: 13, fontWeight: '800' },
 
@@ -1012,6 +1183,18 @@ const styles = StyleSheet.create({
   },
   participantName: { flex: 1, fontSize: 15, fontWeight: '700' },
   input: { borderWidth: 1, borderRadius: 12, padding: 13, marginBottom: 12, fontSize: 15 },
+  dateTimeRow: { flexDirection: 'row', gap: 10, marginBottom: 12 },
+  dateTimeButton: {
+    flex: 1,
+    minHeight: 48,
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  dateTimeButtonText: { flex: 1, fontSize: 15, fontWeight: '700' },
   codeInput: { textAlign: 'center', letterSpacing: 4, fontSize: 20, fontWeight: '800' },
   hint: { fontSize: 12, color: '#999', marginBottom: 14, lineHeight: 18 },
   submitBtn: { padding: 15, borderRadius: 14, alignItems: 'center', marginTop: 4 },
