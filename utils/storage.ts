@@ -1,8 +1,43 @@
+import { decode } from 'base64-arraybuffer';
+import * as FileSystem from 'expo-file-system/legacy';
 import { supabase, SUPABASE_STORAGE_BUCKETS } from './supabase';
 
 export type UploadedPhoto = {
   path: string;
   publicUrl: string | null;
+};
+
+const readLocalFileAsArrayBuffer = async (localUri: string): Promise<ArrayBuffer> => {
+  const base64 = await FileSystem.readAsStringAsync(localUri, {
+    encoding: FileSystem.EncodingType.Base64,
+  });
+
+  return decode(base64);
+};
+
+export const isLocalPhotoAvailable = async (localUri: string): Promise<boolean> => {
+  try {
+    const info = await FileSystem.getInfoAsync(localUri);
+    return info.exists && !info.isDirectory;
+  } catch {
+    return false;
+  }
+};
+
+export const persistTrackerPhoto = async (sourceUri: string, timestamp: number): Promise<string> => {
+  const directory = `${FileSystem.documentDirectory}tracking-photos`;
+  await FileSystem.makeDirectoryAsync(directory, { intermediates: true });
+
+  const extensionMatch = sourceUri.match(/\.([a-zA-Z0-9]+)(?:\?|#|$)/);
+  const extension = extensionMatch?.[1]?.toLowerCase() ?? 'jpg';
+  const destinationUri = `${directory}/${timestamp}_${Date.now()}.${extension}`;
+
+  await FileSystem.copyAsync({
+    from: sourceUri,
+    to: destinationUri,
+  });
+
+  return destinationUri;
 };
 
 /**
@@ -13,18 +48,24 @@ export type UploadedPhoto = {
  */
 export const uploadPhotoToSupabase = async (localUri: string, timestamp: number): Promise<UploadedPhoto | null> => {
   try {
-    const fileName = `${Date.now()}_${timestamp}.jpg`;
-    
-    // React Native에서 로컬 파일을 읽어 Blob으로 변환
-    const response = await fetch(localUri);
-    const blob = await response.blob();
+    const { data: userData, error: userError } = await supabase.auth.getUser();
+    if (userError || !userData.user) {
+      throw userError ?? new Error('Cannot upload photo without a signed-in user.');
+    }
 
-    // FormData를 사용하는 대신 Blob을 직접 업로드 (Supabase js SDK 지원)
+    const fileName = `${Date.now()}_${timestamp}.jpg`;
+    const remotePath = `${userData.user.id}/${fileName}`;
+    if (!(await isLocalPhotoAvailable(localUri))) {
+      throw new Error(`Local photo file is missing: ${localUri}`);
+    }
+
+    const fileData = await readLocalFileAsArrayBuffer(localUri);
+
     const { data, error } = await supabase.storage
       .from(SUPABASE_STORAGE_BUCKETS.PHOTOS)
-      .upload(`public/${fileName}`, blob, {
+      .upload(remotePath, fileData, {
         contentType: 'image/jpeg',
-        upsert: true,
+        upsert: false,
       });
 
     if (error) {
@@ -41,7 +82,7 @@ export const uploadPhotoToSupabase = async (localUri: string, timestamp: number)
       publicUrl: publicUrlData.publicUrl || null,
     };
   } catch (error) {
-    console.error('Error uploading photo:', error);
+    console.error('Photo storage upload failed:', error);
     return null;
   }
 };

@@ -91,6 +91,10 @@ interface HikeParticipant {
   user_id: string;
   display_name: string;
   avatar_url: string | null;
+  attendance_rate?: number;
+  attended_count?: number;
+  eligible_hike_count?: number;
+  rank?: number;
 }
 
 const formatMeetingDate = (iso: string) => {
@@ -112,7 +116,7 @@ const formatMeetingTime = (iso: string) => {
 };
 
 const GROUP_HIKE_STATUS_META: Record<GroupHikeStatus, { label: string; badge: string; color: string; background: string }> = {
-  SCHEDULED: { label: '예정된 덩산', badge: '📅', color: '#F9A825', background: '#FFF8E1' },
+  SCHEDULED: { label: '예정된 덩산', badge: '📅', color: '#7A4F00', background: '#FFF3C4' },
   IN_PROGRESS: { label: '진행중인 덩산', badge: '🥾', color: '#1DB954', background: '#E8F8EE' },
   COMPLETED: { label: '완료된 덩산', badge: '✅', color: '#2E7D32', background: '#E8F5E9' },
   CANCELLED: { label: '취소된 덩산', badge: '⛔', color: '#C62828', background: '#FFEBEE' },
@@ -134,6 +138,17 @@ const formatGroupHikeName = (hike: Pick<GroupHike, 'mountain_name' | 'meeting_at
   const month = startTime ? new Date(startTime).getMonth() + 1 : new Date().getMonth() + 1;
   return `${month}월 ${hike.mountain_name || '덩산'}`;
 };
+
+const getCurrentYearRange = () => {
+  const now = new Date();
+  return {
+    year: now.getFullYear(),
+    start: new Date(now.getFullYear(), 0, 1),
+    end: now,
+  };
+};
+
+const formatAttendanceRate = (rate?: number) => `${Math.round((rate ?? 0) * 100)}%`;
 
 const isDuplicateMembershipError = (error: { code?: string; message?: string } | null | undefined) => {
   if (!error) return false;
@@ -178,6 +193,7 @@ export default function GroupsScreen() {
   const [participantModalHeading, setParticipantModalHeading] = useState('');
   const [participantModalTitle, setParticipantModalTitle] = useState('');
   const [participantMembers, setParticipantMembers] = useState<HikeParticipant[]>([]);
+  const [participantModalMode, setParticipantModalMode] = useState<'participants' | 'attendance'>('participants');
   const [participantLoading, setParticipantLoading] = useState(false);
 
   // Inputs
@@ -414,6 +430,7 @@ export default function GroupsScreen() {
   };
 
   const handleOpenParticipants = async (hike: GroupHike) => {
+    setParticipantModalMode('participants');
     setParticipantModalHeading('참석 멤버');
     setParticipantModalTitle(formatGroupHikeName(hike));
     setParticipantMembers([]);
@@ -439,8 +456,11 @@ export default function GroupsScreen() {
   };
 
   const handleOpenGroupMembers = async (group: Group) => {
-    setParticipantModalHeading('그룹 멤버');
-    setParticipantModalTitle(group.name);
+    const { year, start, end } = getCurrentYearRange();
+
+    setParticipantModalMode('attendance');
+    setParticipantModalHeading('올해 참석률');
+    setParticipantModalTitle(`${group.name} · ${year}년 진행 덩산 기준`);
     setParticipantMembers([]);
     setParticipantModalVisible(true);
     setParticipantLoading(true);
@@ -453,7 +473,67 @@ export default function GroupsScreen() {
       if (error) throw error;
 
       const userIds = (memberRows ?? []).map((row: any) => row.user_id).filter(Boolean);
-      setParticipantMembers(await resolveMembersFromUserIds(userIds));
+      const members = await resolveMembersFromUserIds(userIds);
+      const { data: yearlyHikes, error: yearlyHikesError } = await supabase
+        .from('group_hikes')
+        .select('id, start_time, meeting_at, status')
+        .eq('group_id', group.id)
+        .gte('start_time', start.toISOString())
+        .lte('start_time', end.toISOString())
+        .neq('status', 'CANCELLED');
+      if (yearlyHikesError) throw yearlyHikesError;
+
+      const eligibleHikeIds = (yearlyHikes ?? [])
+        .map((hike: any) => hike.id)
+        .filter(Boolean);
+      const attendedCountMap = new Map<string, number>();
+
+      if (eligibleHikeIds.length > 0 && userIds.length > 0) {
+        const { data: attendanceRows, error: attendanceError } = await supabase
+          .from('group_hike_attendance')
+          .select('user_id, hike_id')
+          .in('hike_id', eligibleHikeIds)
+          .in('user_id', userIds)
+          .eq('participation_status', 'FINISHED');
+        if (attendanceError) throw attendanceError;
+
+        const memberHikePairs = new Set<string>();
+        (attendanceRows ?? []).forEach((row: any) => {
+          if (!row.user_id || !row.hike_id) return;
+          memberHikePairs.add(`${row.user_id}:${row.hike_id}`);
+        });
+        memberHikePairs.forEach((pair) => {
+          const [memberId] = pair.split(':');
+          attendedCountMap.set(memberId, (attendedCountMap.get(memberId) ?? 0) + 1);
+        });
+      }
+
+      const eligibleHikeCount = eligibleHikeIds.length;
+      const rankedMembers = members
+        .map((member) => {
+          const attendedCount = attendedCountMap.get(member.user_id) ?? 0;
+          return {
+            ...member,
+            attended_count: attendedCount,
+            eligible_hike_count: eligibleHikeCount,
+            attendance_rate: eligibleHikeCount > 0 ? attendedCount / eligibleHikeCount : 0,
+          };
+        })
+        .sort((a, b) => {
+          if ((b.attendance_rate ?? 0) !== (a.attendance_rate ?? 0)) {
+            return (b.attendance_rate ?? 0) - (a.attendance_rate ?? 0);
+          }
+          if ((b.attended_count ?? 0) !== (a.attended_count ?? 0)) {
+            return (b.attended_count ?? 0) - (a.attended_count ?? 0);
+          }
+          return a.display_name.localeCompare(b.display_name, 'ko');
+        })
+        .map((member, index) => ({
+          ...member,
+          rank: index + 1,
+        }));
+
+      setParticipantMembers(rankedMembers);
     } catch (e: any) {
       Alert.alert('오류', e.message ?? '그룹 멤버 목록을 불러오지 못했습니다.');
       setParticipantModalVisible(false);
@@ -692,6 +772,7 @@ export default function GroupsScreen() {
       params: {
         groupHikeId: hike.id,
         groupHikeTitle: formatGroupHikeName(hike),
+        groupName: selectedGroup?.name ?? '',
       },
     });
   };
@@ -791,13 +872,17 @@ export default function GroupsScreen() {
     const isCreator = item.creator_id === user?.id;
     const isAttendanceLoading = attendanceActionHikeId === item.id;
     const isDeleting = deletingHikeId === item.id;
+    const statusBadgeLabel = `${statusMeta.badge}\u00A0${statusMeta.label.replace(' ', '\u00A0')}`;
 
     return (
       <View style={[styles.hikeCard, { backgroundColor: isDark ? '#1A1A1A' : '#FFF' }]}>
         <View style={styles.hikeTopRow}>
           <View style={[styles.hikeBadge, { backgroundColor: statusMeta.background }]}>
-            <Text style={[styles.hikeBadgeText, { color: statusMeta.color }]}>
-              {statusMeta.badge} {statusMeta.label}
+            <Text
+              numberOfLines={1}
+              style={[styles.hikeBadgeText, { color: statusMeta.color }]}
+            >
+              {statusBadgeLabel}
             </Text>
           </View>
           <View style={[styles.attendanceBadge, { backgroundColor: item.is_attending ? '#E8F8EE' : '#F2F4F6' }]}>
@@ -1074,9 +1159,49 @@ export default function GroupsScreen() {
               ) : participantMembers.length === 0 ? (
                 <View style={styles.participantEmptyBox}>
                   <Text style={styles.participantEmptyText}>
-                    {participantModalHeading === '그룹 멤버' ? '그룹 멤버가 없어요.' : '아직 참석 멤버가 없어요.'}
+                    {participantModalMode === 'attendance' ? '그룹 멤버가 없어요.' : '아직 참석 멤버가 없어요.'}
                   </Text>
                 </View>
+              ) : participantModalMode === 'attendance' ? (
+                <ScrollView style={styles.participantList} contentContainerStyle={styles.participantListContent}>
+                  <View style={[styles.attendanceTableHead, { borderBottomColor: isDark ? '#2A2A2A' : '#EDF1F4' }]}>
+                    <Text style={[styles.attendanceRankHead, styles.attendanceHeadText]}>순위</Text>
+                    <Text style={[styles.attendanceNameHead, styles.attendanceHeadText]}>닉네임</Text>
+                    <Text style={[styles.attendanceRateHead, styles.attendanceHeadText]}>올해 참석률</Text>
+                  </View>
+
+                  {participantMembers.map((member) => (
+                    <View
+                      key={member.user_id}
+                      style={[
+                        styles.attendanceRow,
+                        member.user_id === user?.id && styles.attendanceCurrentUserRow,
+                        member.user_id === user?.id
+                          ? {
+                              backgroundColor: isDark ? 'rgba(29,185,84,0.14)' : '#E8F8EE',
+                              borderColor: isDark ? 'rgba(29,185,84,0.32)' : '#CDEFD8',
+                            }
+                          : { backgroundColor: isDark ? '#252525' : '#F8FAFB' },
+                      ]}
+                    >
+                      <Text style={[
+                        styles.attendanceRankText,
+                        member.user_id === user?.id && { color: theme.tint },
+                      ]}>
+                        {member.rank ? `${member.rank}위` : '-'}
+                      </Text>
+                      <Text style={[styles.attendanceNameText, { color: theme.text }]} numberOfLines={1}>
+                        {member.display_name}
+                      </Text>
+                      <View style={styles.attendanceRateBox}>
+                        <Text style={styles.attendanceRateText}>{formatAttendanceRate(member.attendance_rate)}</Text>
+                        <Text style={styles.attendanceCountText}>
+                          {member.attended_count ?? 0}/{member.eligible_hike_count ?? 0}
+                        </Text>
+                      </View>
+                    </View>
+                  ))}
+                </ScrollView>
               ) : (
                 <ScrollView style={styles.participantList} contentContainerStyle={styles.participantListContent}>
                   {participantMembers.map((member) => (
@@ -1272,8 +1397,8 @@ const styles = StyleSheet.create({
 
   // Hike Card
   hikeCard: { borderRadius: 20, padding: 18, marginBottom: 14, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.07, shadowRadius: 8, elevation: 3 },
-  hikeTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 10 },
-  hikeBadge: { alignSelf: 'flex-start', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10 },
+  hikeTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, marginBottom: 10 },
+  hikeBadge: { alignSelf: 'flex-start', minWidth: 92, paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10 },
   hikeBadgeText: { fontSize: 12, fontWeight: '700' },
   attendanceBadge: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10 },
   attendanceBadgeText: { fontSize: 12, fontWeight: '800' },
@@ -1329,6 +1454,37 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   participantName: { flex: 1, fontSize: 15, fontWeight: '700' },
+  attendanceTableHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingBottom: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#EDF1F4',
+  },
+  attendanceHeadText: { fontSize: 11, color: '#8A949E', fontWeight: '800' },
+  attendanceRankHead: { width: 48 },
+  attendanceNameHead: { flex: 1 },
+  attendanceRateHead: { width: 84, textAlign: 'right' },
+  attendanceRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    minHeight: 48,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 12,
+    backgroundColor: '#F8FAFB',
+  },
+  attendanceCurrentUserRow: {
+    backgroundColor: '#E8F8EE',
+    borderWidth: 1,
+    borderColor: '#CDEFD8',
+  },
+  attendanceRankText: { width: 48, color: '#6F7A85', fontSize: 13, fontWeight: '900' },
+  attendanceNameText: { flex: 1, paddingRight: 10, fontSize: 14, fontWeight: '800' },
+  attendanceRateBox: { width: 84, alignItems: 'flex-end' },
+  attendanceRateText: { color: '#1DB954', fontSize: 15, fontWeight: '900' },
+  attendanceCountText: { color: '#8A949E', fontSize: 11, fontWeight: '700', marginTop: 2 },
   input: { borderWidth: 1, borderRadius: 12, padding: 13, marginBottom: 12, fontSize: 15 },
   dateTimeRow: { flexDirection: 'row', gap: 10, marginBottom: 12 },
   dateTimeButton: {

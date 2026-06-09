@@ -244,12 +244,15 @@ export default function RecordsScreen() {
   const params = useLocalSearchParams<{
     groupHikeId?: string;
     groupHikeTitle?: string;
+    groupName?: string;
   }>();
   const colorScheme = useColorScheme();
   const theme = Colors[colorScheme ?? 'light'];
   const isDark = colorScheme === 'dark';
   const groupHikeId = getParamString(params.groupHikeId);
   const groupHikeTitle = getParamString(params.groupHikeTitle);
+  const groupName = getParamString(params.groupName);
+  const backLabel = groupHikeId ? `${groupName || '그룹'} 홈` : '홈';
 
   const [loading, setLoading] = useState(true);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
@@ -277,7 +280,7 @@ export default function RecordsScreen() {
       <LinearGradient colors={['#1DB954', '#0a8a3e']} style={styles.header}>
         <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
           <FontAwesome name="chevron-left" size={16} color="#FFF" />
-          <Text style={styles.backText}>홈</Text>
+          <Text style={styles.backText} numberOfLines={1}>{backLabel}</Text>
         </TouchableOpacity>
         <Text style={styles.headerTitle}>{groupHikeId ? '그룹 덩산 기록' : '내 덩산 기록'}</Text>
         <Text style={styles.headerSub}>
@@ -294,17 +297,19 @@ export default function RecordsScreen() {
           <Text style={styles.emptyEmoji}>🏔️</Text>
           <Text style={[styles.emptyTitle, { color: theme.text }]}>아직 덩산 기록이 없어요</Text>
           <Text style={styles.emptyDesc}>트래킹 탭에서 덩산을 시작해보세요!</Text>
-          <TouchableOpacity
-            style={[styles.groupBanner, { marginTop: 24 }]}
-            onPress={() => router.push('/(tabs)/groups')}
-            activeOpacity={0.85}
-          >
-            <LinearGradient colors={['#1DB954', '#0a8a3e']} style={styles.groupBannerGradient}>
-              <Text style={styles.groupBannerEmoji}>👥</Text>
-              <Text style={styles.groupBannerTitle}>그룹 덩산 기록 보기</Text>
-              <FontAwesome name="chevron-right" size={13} color="rgba(255,255,255,0.7)" />
-            </LinearGradient>
-          </TouchableOpacity>
+          {!groupHikeId ? (
+            <TouchableOpacity
+              style={[styles.groupBanner, { marginTop: 24 }]}
+              onPress={() => router.push('/(tabs)/groups')}
+              activeOpacity={0.85}
+            >
+              <LinearGradient colors={['#1DB954', '#0a8a3e']} style={styles.groupBannerGradient}>
+                <Text style={styles.groupBannerEmoji}>👥</Text>
+                <Text style={styles.groupBannerTitle}>그룹 덩산 기록 보기</Text>
+                <FontAwesome name="chevron-right" size={13} color="rgba(255,255,255,0.7)" />
+              </LinearGradient>
+            </TouchableOpacity>
+          ) : null}
         </View>
       ) : (
         <FlatList
@@ -333,25 +338,27 @@ export default function RecordsScreen() {
                   <Text style={[styles.loadMoreText, { color: theme.tint }]}>기록 더 보기</Text>
                 </TouchableOpacity>
               ) : null}
-              <TouchableOpacity
-                style={styles.groupBanner}
-                onPress={() => router.push('/(tabs)/groups')}
-                activeOpacity={0.85}
-              >
-                <LinearGradient colors={['#1DB954', '#0a8a3e']} style={styles.groupBannerGradient}>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, flex: 1 }}>
-                    <Text style={styles.groupBannerEmoji}>👥</Text>
-                    <View>
-                      <Text style={styles.groupBannerTitle}>그룹 덩산 기록</Text>
-                      <Text style={styles.groupBannerSub}>크루원들과 함께한 덩산을 확인하세요</Text>
+              {!groupHikeId ? (
+                <TouchableOpacity
+                  style={styles.groupBanner}
+                  onPress={() => router.push('/(tabs)/groups')}
+                  activeOpacity={0.85}
+                >
+                  <LinearGradient colors={['#1DB954', '#0a8a3e']} style={styles.groupBannerGradient}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, flex: 1 }}>
+                      <Text style={styles.groupBannerEmoji}>👥</Text>
+                      <View>
+                        <Text style={styles.groupBannerTitle}>그룹 덩산 기록</Text>
+                        <Text style={styles.groupBannerSub}>크루원들과 함께한 덩산을 확인하세요</Text>
+                      </View>
                     </View>
-                  </View>
-                  <View style={styles.groupBannerRight}>
-                    <Text style={styles.groupBannerBtn}>그룹 탭으로 이동</Text>
-                    <FontAwesome name="chevron-right" size={11} color="#1DB954" />
-                  </View>
-                </LinearGradient>
-              </TouchableOpacity>
+                    <View style={styles.groupBannerRight}>
+                      <Text style={styles.groupBannerBtn}>그룹 탭으로 이동</Text>
+                      <FontAwesome name="chevron-right" size={11} color="#1DB954" />
+                    </View>
+                  </LinearGradient>
+                </TouchableOpacity>
+              ) : null}
             </>
           }
         />
@@ -363,8 +370,8 @@ export default function RecordsScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1 },
   header: { paddingTop: 55, paddingBottom: 22, paddingHorizontal: 22, borderBottomLeftRadius: 30, borderBottomRightRadius: 30 },
-  backBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 8 },
-  backText: { color: 'rgba(255,255,255,0.85)', fontSize: 14, fontWeight: '600' },
+  backBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 8, alignSelf: 'flex-start', maxWidth: width - 44 },
+  backText: { color: 'rgba(255,255,255,0.85)', fontSize: 14, fontWeight: '600', flexShrink: 1 },
   headerTitle: { fontSize: 26, fontWeight: '900', color: '#FFF' },
   headerSub: { fontSize: 13, color: 'rgba(255,255,255,0.75)', marginTop: 4 },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center' },

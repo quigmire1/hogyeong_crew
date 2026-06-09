@@ -1,12 +1,13 @@
 import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
 import { Stack, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import { useEffect } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import 'react-native-reanimated';
 
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { AuthProvider, useAuth } from '@/contexts/AuthContext';
 import { initDB } from '@/utils/database';
+import { restoreCloudBackupToLocal } from '@/utils/sync';
 
 // Background Task가 가장 먼저 등록되도록 import
 import '@/tasks/locationTask';
@@ -20,11 +21,27 @@ function RootLayoutNav() {
   const { session, isLoading } = useAuth();
   const segments = useSegments();
   const router = useRouter();
+  const [dbReady, setDbReady] = useState(false);
+  const restoredUserIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     // DB 초기화
-    initDB().catch(console.error);
+    initDB()
+      .then(() => setDbReady(true))
+      .catch(console.error);
   }, []);
+
+  useEffect(() => {
+    const userId = session?.user?.id ?? null;
+    if (!dbReady || !userId || restoredUserIdRef.current === userId) {
+      return;
+    }
+
+    restoredUserIdRef.current = userId;
+    restoreCloudBackupToLocal().catch((error) => {
+      console.error('[RootLayout] Failed to restore cloud backup:', error);
+    });
+  }, [dbReady, session?.user?.id]);
 
   useEffect(() => {
     if (isLoading) return;

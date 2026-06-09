@@ -32,6 +32,34 @@ export type SessionRecord = {
   group_hike_title?: string | null;
 };
 
+export type CloudSessionRecord = {
+  id: string;
+  started_at: string;
+  ended_at: string | null;
+  group_hike_id?: string | null;
+  group_hike_title?: string | null;
+};
+
+export type CloudLocationRecord = {
+  local_id: number;
+  session_id: string;
+  latitude: number;
+  longitude: number;
+  altitude?: number | null;
+  recorded_at: string;
+};
+
+export type CloudPhotoRecord = {
+  local_id: number;
+  session_id: string;
+  latitude?: number | null;
+  longitude?: number | null;
+  local_uri?: string | null;
+  remote_path?: string | null;
+  public_url?: string | null;
+  taken_at: string;
+};
+
 const DB_NAME = 'hogyeong_crew.db';
 let _db: SQLite.SQLiteDatabase | null = null;
 const CURRENT_SCHEMA_VERSION = 5;
@@ -241,6 +269,28 @@ export const markSessionsAsSynced = async (ids: string[]) => {
   db.runSync(`UPDATE sessions SET synced = 1 WHERE id IN (${placeholders})`, ...ids);
 };
 
+export const upsertSessionsFromCloud = async (sessions: CloudSessionRecord[]) => {
+  if (sessions.length === 0) return;
+  const db = getDB();
+
+  sessions.forEach((session) => {
+    const startedAt = new Date(session.started_at).getTime();
+    const endedAt = session.ended_at ? new Date(session.ended_at).getTime() : 0;
+    if (!session.id || Number.isNaN(startedAt)) return;
+
+    db.runSync(
+      `INSERT OR REPLACE INTO sessions (
+        id, started_at, ended_at, synced, group_hike_id, group_hike_title
+      ) VALUES (?, ?, ?, 1, ?, ?)`,
+      session.id,
+      startedAt,
+      Number.isNaN(endedAt) ? 0 : endedAt,
+      session.group_hike_id ?? null,
+      session.group_hike_title ?? null,
+    );
+  });
+};
+
 // ─── Location ─────────────────────────────────────────────────────────────────
 
 export const insertLocation = async (
@@ -275,6 +325,28 @@ export const markAsSynced = async (ids: number[]) => {
   const db = getDB();
   const placeholders = ids.map(() => '?').join(',');
   db.runSync(`UPDATE locations SET synced = 1 WHERE id IN (${placeholders})`, ...ids);
+};
+
+export const upsertLocationsFromCloud = async (locations: CloudLocationRecord[]) => {
+  if (locations.length === 0) return;
+  const db = getDB();
+
+  locations.forEach((location) => {
+    const timestamp = new Date(location.recorded_at).getTime();
+    if (!location.local_id || !location.session_id || Number.isNaN(timestamp)) return;
+
+    db.runSync(
+      `INSERT OR IGNORE INTO locations (
+        id, session_id, latitude, longitude, altitude, timestamp, synced
+      ) VALUES (?, ?, ?, ?, ?, ?, 1)`,
+      location.local_id,
+      location.session_id,
+      location.latitude,
+      location.longitude,
+      location.altitude ?? 0,
+      timestamp,
+    );
+  });
 };
 
 // clearLocations는 완전 삭제가 아닌 no-op으로 변경 (세션별로 보존)
@@ -317,6 +389,30 @@ export const markPhotosAsSynced = async (ids: number[]) => {
   const db = getDB();
   const placeholders = ids.map(() => '?').join(',');
   db.runSync(`UPDATE photos SET synced = 1 WHERE id IN (${placeholders})`, ...ids);
+};
+
+export const upsertPhotosFromCloud = async (photos: CloudPhotoRecord[]) => {
+  if (photos.length === 0) return;
+  const db = getDB();
+
+  photos.forEach((photo) => {
+    const timestamp = new Date(photo.taken_at).getTime();
+    if (!photo.local_id || !photo.session_id || Number.isNaN(timestamp)) return;
+
+    db.runSync(
+      `INSERT OR IGNORE INTO photos (
+        id, session_id, latitude, longitude, local_uri, remote_path, public_url, timestamp, synced
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+      photo.local_id,
+      photo.session_id,
+      photo.latitude ?? 0,
+      photo.longitude ?? 0,
+      photo.local_uri ?? photo.public_url ?? '',
+      photo.remote_path ?? null,
+      photo.public_url ?? null,
+      timestamp,
+    );
+  });
 };
 
 export const markPhotoAsSynced = async (

@@ -11,12 +11,13 @@ import { useColorScheme } from '../../hooks/use-color-scheme';
 import { getCurrentSessionId, isLocationTaskRunning, setCurrentSessionId, startLocationTask, stopLocationTask } from '../../tasks/locationTask';
 import { insertLocation, insertPhoto, PhotoRecord, createSession, endSession, getLocationsBySession, getPhotosBySession, getAllSessions } from '../../utils/database';
 import { calculateElevationGain } from '../../utils/elevation';
-import { syncHikeBackupToCloud } from '../../utils/sync';
+import { getPendingSyncCounts, PendingSyncCounts, syncHikeBackupToCloud } from '../../utils/sync';
 import { WeatherBadge } from '../../components/WeatherBadge';
 import { fetchWeather, evaluateHikingSafety } from '../../utils/weather';
 import { saveHikeSession } from '../../utils/weatherFairy';
 import { useAuth } from '../../contexts/AuthContext';
 import { supabase } from '../../utils/supabase';
+import { persistTrackerPhoto } from '../../utils/storage';
 
 const isIosExpoGo = Platform.OS === 'ios' && Constants.appOwnership === 'expo';
 
@@ -46,6 +47,13 @@ const getParamString = (value: string | string[] | undefined) => (
   Array.isArray(value) ? value[0] : value
 );
 
+const EMPTY_PENDING_SYNC_COUNTS: PendingSyncCounts = {
+  sessions: 0,
+  locations: 0,
+  photos: 0,
+  total: 0,
+};
+
 export default function TrackerScreen() {
   const colorScheme = useColorScheme();
   const theme = Colors[colorScheme ?? 'light'];
@@ -63,6 +71,7 @@ export default function TrackerScreen() {
   const [location, setLocation] = useState<Location.LocationObject | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [pendingSyncCounts, setPendingSyncCounts] = useState<PendingSyncCounts>(EMPTY_PENDING_SYNC_COUNTS);
   const [isTrackingAction, setIsTrackingAction] = useState(false);
   const [startCountdown, setStartCountdown] = useState<number | null>(null);
   const currentSessionIdRef = useRef<string>('');
@@ -133,6 +142,18 @@ export default function TrackerScreen() {
       intervalRef.current = null;
     }
   };
+
+  const refreshPendingSyncCounts = useCallback(async () => {
+    try {
+      setPendingSyncCounts(await getPendingSyncCounts());
+    } catch (error) {
+      console.warn('[Tracker] Failed to load pending sync counts:', error);
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshPendingSyncCounts();
+  }, [refreshPendingSyncCounts]);
 
   const updateElapsedTime = useCallback(() => {
     if (!sessionStartRef.current) {
@@ -333,17 +354,29 @@ export default function TrackerScreen() {
     startRouteRefresh,
   ]);
 
-  const handleSync = async () => {
+  const runCloudSync = useCallback(async (options?: { showAlert?: boolean }): Promise<boolean> => {
+    const showAlert = options?.showAlert ?? false;
     setIsSyncing(true);
     const success = await syncHikeBackupToCloud();
     setIsSyncing(false);
+    await refreshPendingSyncCounts();
+
     if (success) {
-      Alert.alert('동기화 완료', '모든 세션, 경로, 사진이 성공적으로 백업되었습니다.');
-      // 화면 갱신
       loadRouteFromDB();
+      if (showAlert) {
+        Alert.alert('동기화 완료', '백업 가능한 세션, 경로, 사진이 성공적으로 저장되었습니다.');
+      }
     } else {
-      Alert.alert('동기화 실패', '일부 세션, 경로 또는 사진을 백업하지 못했습니다.');
+      if (showAlert) {
+        Alert.alert('동기화 실패', '일부 세션, 경로 또는 사진을 백업하지 못했습니다.');
+      }
     }
+
+    return success;
+  }, [loadRouteFromDB, refreshPendingSyncCounts]);
+
+  const handleSync = async () => {
+    await runCloudSync({ showAlert: true });
   };
 
   const stopTracking = async () => {
@@ -353,6 +386,7 @@ export default function TrackerScreen() {
     const sessionId = currentSessionIdRef.current;
     const startedAt = sessionStartRef.current;
     let weatherNotice = '';
+    let syncNotice = '';
 
     try {
       stopForegroundTracking();
@@ -405,6 +439,15 @@ export default function TrackerScreen() {
         }
       }
 
+      if (sessionId) {
+        const syncSuccess = await runCloudSync();
+        syncNotice = syncSuccess
+          ? '\n\n클라우드 백업도 완료되었습니다.'
+          : '\n\n클라우드 백업은 완료하지 못했습니다. 네트워크를 확인한 뒤 오른쪽 위 구름 버튼으로 다시 동기화해주세요.';
+      } else {
+        await refreshPendingSyncCounts();
+      }
+
       sessionStartRef.current = null;
       setActiveGroupHikeId(requestedGroupHikeId ?? null);
       setActiveGroupHikeTitle(requestedGroupHikeTitle ?? null);
@@ -414,7 +457,7 @@ export default function TrackerScreen() {
       setElapsedSeconds(0);
       Alert.alert(
         '덩산 종료',
-        `누적 상승 ${Math.floor(sessionSummary.elevationGain)}m, 사진 ${sessionSummary.photoCount}장으로 기록을 마쳤습니다.${weatherNotice}`,
+        `누적 상승 ${Math.floor(sessionSummary.elevationGain)}m, 사진 ${sessionSummary.photoCount}장으로 기록을 마쳤습니다.${weatherNotice}${syncNotice}`,
         [
           { text: '계속 보기', style: 'cancel' },
           { text: '기록 보기', onPress: () => router.push('/records') },
@@ -567,8 +610,9 @@ export default function TrackerScreen() {
     });
 
     if (!result.canceled && result.assets[0]) {
-      const uri = result.assets[0].uri;
-      await insertPhoto(location.coords.latitude, location.coords.longitude, uri, Date.now(), currentSessionIdRef.current);
+      const timestamp = Date.now();
+      const uri = await persistTrackerPhoto(result.assets[0].uri, timestamp);
+      await insertPhoto(location.coords.latitude, location.coords.longitude, uri, timestamp, currentSessionIdRef.current);
       loadRouteFromDB();
     }
   };
@@ -576,6 +620,7 @@ export default function TrackerScreen() {
   const currentAltitude = location?.coords?.altitude ? Math.floor(location.coords.altitude) : 0;
   const elapsedTime = formatElapsedTime(elapsedSeconds);
   const headerTitle = activeGroupHikeTitle ?? '덩산 트래커';
+  const hasPendingSync = pendingSyncCounts.total > 0;
 
   return (
     <View style={[styles.container, { backgroundColor: theme.background }]}>
@@ -598,6 +643,23 @@ export default function TrackerScreen() {
           </TouchableOpacity>
         </View>
       </View>
+
+      {hasPendingSync && (
+        <TouchableOpacity
+          style={styles.syncNotice}
+          onPress={handleSync}
+          disabled={isSyncing}
+          activeOpacity={0.85}
+        >
+          <FontAwesome name="exclamation-circle" size={16} color="#B45309" />
+          <View style={styles.syncNoticeTextBox}>
+            <Text style={styles.syncNoticeTitle}>동기화되지 않은 덩산 기록이 있어요</Text>
+            <Text style={styles.syncNoticeDesc}>
+              세션 {pendingSyncCounts.sessions}개 · 경로 {pendingSyncCounts.locations}개 · 사진 {pendingSyncCounts.photos}개를 구름 버튼으로 다시 백업할 수 있습니다.
+            </Text>
+          </View>
+        </TouchableOpacity>
+      )}
       
       <View style={styles.mapContainer}>
         {location ? (
@@ -678,6 +740,33 @@ const styles = StyleSheet.create({
   title: {
     fontSize: 24,
     fontWeight: '900', // 더 두껍고 둥근 느낌을 위해
+  },
+  syncNotice: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+    marginHorizontal: 20,
+    marginBottom: 12,
+    padding: 12,
+    borderRadius: 14,
+    backgroundColor: '#FFF7ED',
+    borderWidth: 1,
+    borderColor: '#FED7AA',
+  },
+  syncNoticeTextBox: {
+    flex: 1,
+  },
+  syncNoticeTitle: {
+    color: '#92400E',
+    fontSize: 13,
+    fontWeight: '900',
+    marginBottom: 3,
+  },
+  syncNoticeDesc: {
+    color: '#B45309',
+    fontSize: 12,
+    fontWeight: '700',
+    lineHeight: 17,
   },
   mapContainer: {
     flex: 1,

@@ -63,7 +63,7 @@ CREATE TABLE IF NOT EXISTS public.app_settings (
 
 INSERT INTO public.app_settings (key, value)
 VALUES
-  ('GROUP_HIKE_COMPLETION_THRESHOLD', '2'::jsonb),
+  ('GROUP_HIKE_COMPLETION_THRESHOLD', '1'::jsonb),
   ('GROUP_HIKE_EXPIRE_AFTER_MINUTES', '1440'::jsonb)
 ON CONFLICT (key) DO NOTHING;
 
@@ -193,7 +193,7 @@ BEGIN
   SELECT COALESCE(
     v_hike.completion_threshold,
     s.completion_threshold,
-    public.app_setting_int('GROUP_HIKE_COMPLETION_THRESHOLD', 2)
+    public.app_setting_int('GROUP_HIKE_COMPLETION_THRESHOLD', 1)
   )
   INTO v_threshold
   FROM (SELECT 1) anchor
