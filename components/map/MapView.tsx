@@ -98,6 +98,7 @@ export default function MapView({ currentLocation, routeCoordinates = [], photos
     lng: currentRegion.longitude,
     zoomLevel: 15,
     animationDuration: recenterVersion > 0 ? 350 : 0,
+    recenterRequestId: recenterVersion,
   }), [currentRegion.latitude, currentRegion.longitude, recenterVersion]);
 
   const kakaoPhotoMarkers = useMemo(() => photos.map((photo, index) => ({
@@ -268,7 +269,7 @@ const styles = StyleSheet.create({
   providerBadge: {
     position: 'absolute',
     left: 12,
-    bottom: 12,
+    top: 12,
     borderRadius: 8,
     backgroundColor: 'rgba(17, 24, 39, 0.78)',
     paddingHorizontal: 10,

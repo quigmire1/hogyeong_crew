@@ -200,6 +200,7 @@ export default function GroupsScreen() {
   const [participantModalMode, setParticipantModalMode] = useState<'participants' | 'attendance'>('participants');
   const [participantLoading, setParticipantLoading] = useState(false);
   const [locationPickerTarget, setLocationPickerTarget] = useState<'create' | 'edit' | null>(null);
+  const [mountainPickerTarget, setMountainPickerTarget] = useState<'create' | 'edit' | null>(null);
 
   // Inputs
   const [newGroupName, setNewGroupName] = useState('');
@@ -295,6 +296,50 @@ export default function GroupsScreen() {
         <Text style={[styles.locationButtonText, { color: textColor }]} numberOfLines={1}>
           {form.meeting_point || '집결 장소'}
         </Text>
+        {form.meeting_point ? (
+          <TouchableOpacity
+            style={styles.clearFieldButton}
+            hitSlop={10}
+            onPress={(event) => {
+              event.stopPropagation();
+              clearHikeLocation(target);
+            }}
+          >
+            <FontAwesome name="times-circle" size={18} color={isDark ? '#777' : '#9AA3A0'} />
+          </TouchableOpacity>
+        ) : null}
+      </TouchableOpacity>
+    );
+  };
+
+  const renderMountainButton = (target: 'create' | 'edit') => {
+    const form = target === 'create' ? newHike : editHike;
+    const textColor = form.mountain_name ? (isDark ? '#FFF' : '#111') : (isDark ? '#555' : '#AAA');
+
+    return (
+      <TouchableOpacity
+        style={[
+          styles.locationButton,
+          { borderColor: isDark ? '#333' : '#EEE', backgroundColor: isDark ? '#2A2A2A' : '#FAFAFA' },
+        ]}
+        onPress={() => setMountainPickerTarget(target)}
+      >
+        <FontAwesome name="tree" size={16} color="#1DB954" />
+        <Text style={[styles.locationButtonText, { color: textColor }]} numberOfLines={1}>
+          {form.mountain_name || '산 이름'}
+        </Text>
+        {form.mountain_name ? (
+          <TouchableOpacity
+            style={styles.clearFieldButton}
+            hitSlop={10}
+            onPress={(event) => {
+              event.stopPropagation();
+              clearHikeMountain(target);
+            }}
+          >
+            <FontAwesome name="times-circle" size={18} color={isDark ? '#777' : '#9AA3A0'} />
+          </TouchableOpacity>
+        ) : null}
       </TouchableOpacity>
     );
   };
@@ -307,6 +352,38 @@ export default function GroupsScreen() {
     };
 
     if (locationPickerTarget === 'edit') {
+      setEditHike((prev) => ({ ...prev, ...update }));
+    } else {
+      setNewHike((prev) => ({ ...prev, ...update }));
+    }
+  };
+
+  const handleSelectMountain = (location: { name: string; latitude: number; longitude: number }) => {
+    const update = {
+      mountain_name: location.name,
+      forecast_lat: location.latitude,
+      forecast_lon: location.longitude,
+    };
+
+    if (mountainPickerTarget === 'edit') {
+      setEditHike((prev) => ({ ...prev, ...update }));
+    } else {
+      setNewHike((prev) => ({ ...prev, ...update }));
+    }
+  };
+
+  const clearHikeLocation = (target: 'create' | 'edit') => {
+    const update = { meeting_point: '', forecast_lat: null, forecast_lon: null };
+    if (target === 'edit') {
+      setEditHike((prev) => ({ ...prev, ...update }));
+    } else {
+      setNewHike((prev) => ({ ...prev, ...update }));
+    }
+  };
+
+  const clearHikeMountain = (target: 'create' | 'edit') => {
+    const update = { mountain_name: '', forecast_lat: null, forecast_lon: null };
+    if (target === 'edit') {
       setEditHike((prev) => ({ ...prev, ...update }));
     } else {
       setNewHike((prev) => ({ ...prev, ...update }));
@@ -1087,6 +1164,10 @@ export default function GroupsScreen() {
   const locationPickerCoordinate = locationPickerForm.forecast_lat != null && locationPickerForm.forecast_lon != null
     ? { latitude: locationPickerForm.forecast_lat, longitude: locationPickerForm.forecast_lon }
     : null;
+  const mountainPickerForm = mountainPickerTarget === 'edit' ? editHike : newHike;
+  const mountainPickerCoordinate = mountainPickerForm.forecast_lat != null && mountainPickerForm.forecast_lon != null
+    ? { latitude: mountainPickerForm.forecast_lat, longitude: mountainPickerForm.forecast_lon }
+    : null;
 
   if (view === 'hikes' && selectedGroup) {
     return (
@@ -1144,7 +1225,7 @@ export default function GroupsScreen() {
                 </TouchableOpacity>
               </View>
               <ScrollView>
-                <StyledInput placeholder="산 이름" value={newHike.mountain_name} onChangeText={(t: string) => setNewHike({ ...newHike, mountain_name: t })} />
+                {renderMountainButton('create')}
                 {renderHikeDateTimeButtons('create', newHike.meeting_at)}
                 {renderLocationButton('create')}
                 {renderHikeDatePicker('create')}
@@ -1180,7 +1261,7 @@ export default function GroupsScreen() {
                 </TouchableOpacity>
               </View>
               <ScrollView>
-                <StyledInput placeholder="산 이름" value={editHike.mountain_name} onChangeText={(t: string) => setEditHike({ ...editHike, mountain_name: t })} />
+                {renderMountainButton('edit')}
                 {renderHikeDateTimeButtons('edit', editHike.meeting_at)}
                 {renderLocationButton('edit')}
                 {renderHikeDatePicker('edit')}
@@ -1207,6 +1288,24 @@ export default function GroupsScreen() {
           isDark={isDark}
           onClose={() => setLocationPickerTarget(null)}
           onSelect={handleSelectLocation}
+          searchPlaceholder="집결지 검색"
+          namePlaceholder="저장할 집결지명"
+          applyLabel="집결지로 선택"
+          markerTitle="집결지"
+        />
+
+        <HikeLocationPicker
+          visible={mountainPickerTarget !== null}
+          title="산 이름 선택"
+          initialName={mountainPickerForm.mountain_name}
+          initialCoordinate={mountainPickerCoordinate}
+          isDark={isDark}
+          onClose={() => setMountainPickerTarget(null)}
+          onSelect={handleSelectMountain}
+          searchPlaceholder="산 이름 검색"
+          namePlaceholder="저장할 산 이름"
+          applyLabel="산으로 선택"
+          markerTitle="산 위치"
         />
 
         {/* 참석자 목록 모달 */}
@@ -1559,6 +1658,7 @@ const styles = StyleSheet.create({
   input: { borderWidth: 1, borderRadius: 12, padding: 13, marginBottom: 12, fontSize: 15 },
   locationButton: { minHeight: 48, borderWidth: 1, borderRadius: 12, paddingHorizontal: 13, marginBottom: 12, flexDirection: 'row', alignItems: 'center', gap: 8 },
   locationButtonText: { flex: 1, fontSize: 15 },
+  clearFieldButton: { width: 28, height: 28, alignItems: 'center', justifyContent: 'center' },
   dateTimeRow: { flexDirection: 'row', gap: 10, marginBottom: 12 },
   dateTimeButton: {
     flex: 1,

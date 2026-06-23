@@ -277,7 +277,7 @@ public final class HogyeongKakaoMapView: UIView {
   }
 
   private func makeCurrentLocationImage() -> UIImage {
-    let size = CGSize(width: 26, height: 26)
+    let size = CGSize(width: 16, height: 16)
     let rect = CGRect(origin: .zero, size: size)
     let renderer = UIGraphicsImageRenderer(size: size)
 
@@ -286,10 +286,13 @@ public final class HogyeongKakaoMapView: UIView {
       context.cgContext.fillEllipse(in: rect)
 
       UIColor(red: 37 / 255, green: 99 / 255, blue: 235 / 255, alpha: 1).setFill()
+      context.cgContext.fillEllipse(in: rect.insetBy(dx: 2, dy: 2))
+
+      UIColor(red: 37 / 255, green: 99 / 255, blue: 235 / 255, alpha: 0.16).setFill()
       context.cgContext.fillEllipse(in: rect.insetBy(dx: 3, dy: 3))
 
-      UIColor.white.withAlphaComponent(0.35).setFill()
-      context.cgContext.fillEllipse(in: rect.insetBy(dx: 8, dy: 8))
+      UIColor(red: 37 / 255, green: 99 / 255, blue: 235 / 255, alpha: 1).setFill()
+      context.cgContext.fillEllipse(in: rect.insetBy(dx: 6, dy: 6))
     }
   }
 

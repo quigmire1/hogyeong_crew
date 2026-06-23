@@ -7,6 +7,7 @@ import { ActivityIndicator, Alert, Image, Modal, ScrollView, StyleSheet, Text, T
 import { useAuth } from '../../contexts/AuthContext';
 import { getAllSessions, getLocationsBySession, LocationRecord } from '../../utils/database';
 import { calculateElevationGain } from '../../utils/elevation';
+import { readLocalFileAsArrayBuffer } from '../../utils/storage';
 import { supabase, SUPABASE_STORAGE_BUCKETS } from '../../utils/supabase';
 import { getWeatherFairyResult, WeatherFairyResult } from '../../utils/weatherFairy';
 
@@ -169,6 +170,11 @@ export default function ProfileScreen() {
 
   // 프로필 사진 변경
   const handlePickAvatar = async () => {
+    if (!user) {
+      Alert.alert('로그인 필요', '프로필 사진을 변경하려면 다시 로그인해주세요.');
+      return;
+    }
+
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (status !== 'granted') {
       Alert.alert('권한 필요', '갤러리 접근 권한이 필요합니다.');
@@ -189,13 +195,12 @@ export default function ProfileScreen() {
 
     try {
       // 1. Supabase Storage 업로드
-      const fileName = `avatars/${user?.id}_${Date.now()}.jpg`;
-      const response = await fetch(uri);
-      const blob = await response.blob();
+      const fileName = `${user.id}/avatar_${Date.now()}.jpg`;
+      const fileData = await readLocalFileAsArrayBuffer(uri);
 
       const { error: uploadError } = await supabase.storage
         .from(SUPABASE_STORAGE_BUCKETS.AVATARS)
-        .upload(fileName, blob, { contentType: 'image/jpeg', upsert: true });
+        .upload(fileName, fileData, { contentType: 'image/jpeg', upsert: false });
 
       if (uploadError) throw uploadError;
 

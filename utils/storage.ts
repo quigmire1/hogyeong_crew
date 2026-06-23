@@ -7,7 +7,7 @@ export type UploadedPhoto = {
   publicUrl: string | null;
 };
 
-const readLocalFileAsArrayBuffer = async (localUri: string): Promise<ArrayBuffer> => {
+export const readLocalFileAsArrayBuffer = async (localUri: string): Promise<ArrayBuffer> => {
   const base64 = await FileSystem.readAsStringAsync(localUri, {
     encoding: FileSystem.EncodingType.Base64,
   });

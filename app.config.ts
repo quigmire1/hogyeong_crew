@@ -22,11 +22,11 @@ const plugins: NonNullable<ExpoConfig["plugins"]> = [
     "expo-splash-screen",
     {
       image: "./assets/images/splash-icon.png",
-      imageWidth: 200,
+      imageWidth: 360,
       resizeMode: "contain",
       backgroundColor: "#ffffff",
       dark: {
-        backgroundColor: "#000000"
+        backgroundColor: "#ffffff"
       }
     }
   ],

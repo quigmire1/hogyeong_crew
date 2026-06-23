@@ -1,9 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { StyleSheet, View, Text, TouchableOpacity, ActivityIndicator, Alert, Platform } from 'react-native';
+import { StyleSheet, View, Text, TouchableOpacity, ActivityIndicator, Alert } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import * as Location from 'expo-location';
 import * as ImagePicker from 'expo-image-picker';
-import Constants from 'expo-constants';
 import { FontAwesome } from '@expo/vector-icons';
 import MapView, { Coordinate } from '../../components/map/MapView';
 import { Colors } from '../../constants/theme';
@@ -18,8 +17,6 @@ import { saveHikeSession } from '../../utils/weatherFairy';
 import { useAuth } from '../../contexts/AuthContext';
 import { supabase } from '../../utils/supabase';
 import { persistTrackerPhoto } from '../../utils/storage';
-
-const isIosExpoGo = Platform.OS === 'ios' && Constants.appOwnership === 'expo';
 
 const formatElapsedTime = (totalSeconds: number) => {
   const hours = Math.floor(totalSeconds / 3600);
@@ -88,7 +85,6 @@ export default function TrackerScreen() {
   const elapsedIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const countdownTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const countdownRunRef = useRef(0);
-  const foregroundLocationSubRef = useRef<Location.LocationSubscription | null>(null);
   const [activeGroupHikeId, setActiveGroupHikeId] = useState<string | null>(requestedGroupHikeId ?? null);
   const [activeGroupHikeTitle, setActiveGroupHikeTitle] = useState<string | null>(requestedGroupHikeTitle ?? null);
   const [activeGroupName, setActiveGroupName] = useState<string | null>(requestedGroupName ?? null);
@@ -185,11 +181,6 @@ export default function TrackerScreen() {
     }
   };
 
-  const stopForegroundTracking = () => {
-    foregroundLocationSubRef.current?.remove();
-    foregroundLocationSubRef.current = null;
-  };
-
   const clearStartCountdownTimer = () => {
     if (countdownTimeoutRef.current) {
       clearTimeout(countdownTimeoutRef.current);
@@ -197,41 +188,10 @@ export default function TrackerScreen() {
     }
   };
 
-  const startForegroundTracking = useCallback(async (sessionId: string) => {
-    stopForegroundTracking();
-
-    foregroundLocationSubRef.current = await Location.watchPositionAsync(
-      {
-        accuracy: Location.Accuracy.High,
-        timeInterval: 10000,
-        distanceInterval: 5,
-      },
-      async (nextLocation) => {
-        try {
-          setLocation(nextLocation);
-          await insertLocation(
-            nextLocation.coords.latitude,
-            nextLocation.coords.longitude,
-            nextLocation.coords.altitude ?? 0,
-            nextLocation.timestamp,
-            sessionId,
-          );
-          await loadRouteFromDB(sessionId);
-        } catch (e) {
-          console.error('[Tracker] Failed to save foreground location:', e);
-        }
-      },
-    );
-  }, [loadRouteFromDB]);
-
   const requestTrackingPermissions = useCallback(async () => {
     const { status: fgStatus } = await Location.requestForegroundPermissionsAsync();
     if (fgStatus !== 'granted') {
       throw new Error('위치 정보 접근 권한이 거부되었습니다.');
-    }
-
-    if (isIosExpoGo) {
-      return;
     }
 
     const { status: bgStatus } = await Location.requestBackgroundPermissionsAsync();
@@ -289,7 +249,7 @@ export default function TrackerScreen() {
         if (!isMounted) return;
         setLocation(currentLocation);
 
-        const isTaskRunning = isIosExpoGo ? false : await isLocationTaskRunning();
+        const isTaskRunning = await isLocationTaskRunning();
         if (!isMounted) return;
 
         if (activeSessionId && isTaskRunning) {
@@ -306,23 +266,6 @@ export default function TrackerScreen() {
 
           setIsTracking(true);
           await loadRouteFromDB(activeSessionId);
-          startRouteRefresh();
-          startElapsedTimer();
-        } else if (activeSessionId && isIosExpoGo) {
-          currentSessionIdRef.current = activeSessionId;
-
-          const sessions = await getAllSessions();
-          const activeSession = sessions.find((session) => session.id === activeSessionId);
-          sessionStartRef.current = activeSession
-            ? new Date(activeSession.started_at).toISOString()
-            : null;
-          setActiveGroupHikeId(activeSession?.group_hike_id ?? null);
-          setActiveGroupHikeTitle(activeSession?.group_hike_title ?? null);
-          setActiveGroupName(activeSession?.group_name ?? null);
-
-          setIsTracking(true);
-          await loadRouteFromDB(activeSessionId);
-          await startForegroundTracking(activeSessionId);
           startRouteRefresh();
           startElapsedTimer();
         } else if (activeSessionId && !isTaskRunning) {
@@ -346,7 +289,6 @@ export default function TrackerScreen() {
       isMounted = false;
       countdownRunRef.current += 1;
       clearStartCountdownTimer();
-      stopForegroundTracking();
       stopRouteRefresh();
       stopElapsedTimer();
     };
@@ -358,7 +300,6 @@ export default function TrackerScreen() {
     requestedGroupHikeTitle,
     requestedGroupName,
     startElapsedTimer,
-    startForegroundTracking,
     startRouteRefresh,
   ]);
 
@@ -397,10 +338,7 @@ export default function TrackerScreen() {
     let syncNotice = '';
 
     try {
-      stopForegroundTracking();
-      if (!isIosExpoGo) {
-        await stopLocationTask();
-      }
+      await stopLocationTask();
       stopRouteRefresh();
       stopElapsedTimer();
       setIsTracking(false);
@@ -522,20 +460,16 @@ export default function TrackerScreen() {
       setPhotos([]);
       setElevationGain(0);
 
-      if (isIosExpoGo) {
-        await startForegroundTracking(newSessionId);
-      } else {
-        await startLocationTask({
-          accuracy: Location.Accuracy.High,
-          timeInterval: 10000,
-          distanceInterval: 5,
-          foregroundService: {
-            notificationTitle: '덩산',
-            notificationBody: '덩산 경로를 백그라운드에서 기록 중입니다.',
-            notificationColor: '#2ECC71',
-          },
-        });
-      }
+      await startLocationTask({
+        accuracy: Location.Accuracy.High,
+        timeInterval: 10000,
+        distanceInterval: 5,
+        foregroundService: {
+          notificationTitle: '덩산',
+          notificationBody: '덩산 경로를 백그라운드에서 기록 중입니다.',
+          notificationColor: '#2ECC71',
+        },
+      });
 
       if (groupHikeIdForSession) {
         const { error: groupStartError } = await supabase.rpc('start_group_hike_recording', {
@@ -549,10 +483,7 @@ export default function TrackerScreen() {
       startRouteRefresh();
       startElapsedTimer();
     } catch (error) {
-      stopForegroundTracking();
-      if (!isIosExpoGo) {
-        await stopLocationTask();
-      }
+      await stopLocationTask();
       if (newSessionId) {
         await endSession(newSessionId);
       }
@@ -781,6 +712,7 @@ const styles = StyleSheet.create({
   },
   mapContainer: {
     flex: 1,
+    position: 'relative',
   },
   controls: {
     padding: 20,
@@ -870,6 +802,7 @@ const styles = StyleSheet.create({
     position: 'absolute',
     right: 20,
     bottom: 20,
+    zIndex: 15,
     backgroundColor: '#FF6B6B',
     width: 60,
     height: 60,
@@ -880,6 +813,6 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.3,
     shadowRadius: 5,
-    elevation: 6,
+    elevation: 12,
   },
 });
