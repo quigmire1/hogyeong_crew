@@ -1,4 +1,5 @@
 import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
+import * as Linking from 'expo-linking';
 import { Stack, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useRef, useState } from 'react';
@@ -8,6 +9,7 @@ import { useColorScheme } from '@/hooks/use-color-scheme';
 import { AuthProvider, useAuth } from '@/contexts/AuthContext';
 import { initDB } from '@/utils/database';
 import { restoreCloudBackupToLocal } from '@/utils/sync';
+import { registerPushToken } from '@/utils/pushNotifications';
 
 // Background Task가 가장 먼저 등록되도록 import
 import '@/tasks/locationTask';
@@ -32,6 +34,22 @@ function RootLayoutNav() {
   }, []);
 
   useEffect(() => {
+    Linking.getInitialURL()
+      .then((url) => {
+        console.log('[RootLayout] Initial URL:', url);
+      })
+      .catch((error) => {
+        console.warn('[RootLayout] Failed to read initial URL:', error);
+      });
+
+    const subscription = Linking.addEventListener('url', ({ url }) => {
+      console.log('[RootLayout] Linking URL event:', url);
+    });
+
+    return () => subscription.remove();
+  }, []);
+
+  useEffect(() => {
     const userId = session?.user?.id ?? null;
     if (!dbReady || !userId || restoredUserIdRef.current === userId) {
       return;
@@ -42,6 +60,15 @@ function RootLayoutNav() {
       console.error('[RootLayout] Failed to restore cloud backup:', error);
     });
   }, [dbReady, session?.user?.id]);
+
+  useEffect(() => {
+    const userId = session?.user?.id;
+    if (!userId) return;
+
+    registerPushToken(userId).catch((error) => {
+      console.warn('[RootLayout] Failed to register push token:', error);
+    });
+  }, [session?.user?.id]);
 
   useEffect(() => {
     if (isLoading) return;

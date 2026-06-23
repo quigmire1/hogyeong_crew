@@ -18,6 +18,9 @@ export default function AuthCallbackScreen() {
         const callbackUrl = Array.isArray(url) ? url[0] : url;
         const resolvedUrl = callbackUrl || await Linking.getInitialURL();
 
+        console.log('[AuthCallback] Route param URL:', callbackUrl);
+        console.log('[AuthCallback] Resolved URL:', resolvedUrl);
+
         if (resolvedUrl) {
           const query = resolvedUrl.split('?')[1]?.split('#')[0] ?? '';
           const hash = resolvedUrl.split('#')[1] ?? '';

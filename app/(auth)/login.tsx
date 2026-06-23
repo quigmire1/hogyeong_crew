@@ -144,15 +144,20 @@ export default function LoginScreen() {
           // 사용자가 로그인 취소
           console.log('사용자가 로그인을 취소했습니다.');
         } else if (result.type === 'dismiss') {
-          await wait(800);
-          const initialUrl = await Linking.getInitialURL();
-          console.log('[Kakao Login] Callback URL from listener:', callbackUrl);
-          console.log('[Kakao Login] Initial URL after dismiss:', initialUrl);
+          for (let attempt = 0; attempt < 6 && !callbackUrl; attempt += 1) {
+            await wait(500);
+            const initialUrl = await Linking.getInitialURL();
+            console.log('[Kakao Login] Callback URL from listener:', callbackUrl);
+            console.log('[Kakao Login] Initial URL after dismiss:', initialUrl);
+
+            if (isCallbackUrl(initialUrl)) {
+              routeToCallback(initialUrl);
+              return;
+            }
+          }
 
           if (callbackUrl) {
             console.log('인증 브라우저가 닫혔지만 callback 딥링크를 수신했습니다.');
-          } else if (isCallbackUrl(initialUrl)) {
-            routeToCallback(initialUrl);
           } else {
             Alert.alert('로그인 중단', '인증 창이 닫혔습니다. 다시 시도해주세요.');
           }

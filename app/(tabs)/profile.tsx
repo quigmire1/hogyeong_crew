@@ -5,7 +5,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, Image, Modal, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { useAuth } from '../../contexts/AuthContext';
-import { getAllSessions, getLocationsBySession, getPhotosBySession, LocationRecord } from '../../utils/database';
+import { getAllSessions, getLocationsBySession, LocationRecord } from '../../utils/database';
 import { calculateElevationGain } from '../../utils/elevation';
 import { supabase, SUPABASE_STORAGE_BUCKETS } from '../../utils/supabase';
 import { getWeatherFairyResult, WeatherFairyResult } from '../../utils/weatherFairy';
@@ -14,11 +14,6 @@ type ProfileStats = {
   sessionCount: number;
   elevationGain: number;
   distanceKm: number;
-};
-
-type RecentPhoto = {
-  id: string;
-  uri: string;
 };
 
 const DEFAULT_PROFILE_STATS: ProfileStats = {
@@ -71,7 +66,6 @@ export default function ProfileScreen() {
   const [fairy, setFairy] = useState<WeatherFairyResult | null>(null);
   const [fairyLoading, setFairyLoading] = useState(true);
   const [profileStats, setProfileStats] = useState<ProfileStats>(DEFAULT_PROFILE_STATS);
-  const [recentPhotos, setRecentPhotos] = useState<RecentPhoto[]>([]);
   const [profileStatsLoading, setProfileStatsLoading] = useState(true);
   const [avatarUri, setAvatarUri] = useState<string | null>(null);
   const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
@@ -113,13 +107,9 @@ export default function ProfileScreen() {
           const sessions = await getAllSessions();
           const completedSessions = sessions.filter((session) => session.ended_at > 0);
           const sessionDetails = await Promise.all(
-            completedSessions.map(async (session) => {
-              const [locations, photos] = await Promise.all([
-                getLocationsBySession(session.id),
-                getPhotosBySession(session.id),
-              ]);
-
-              return { locations, photos };
+            sessions.map(async (session) => {
+              const locations = await getLocationsBySession(session.id);
+              return { locations };
             }),
           );
 
@@ -133,21 +123,12 @@ export default function ProfileScreen() {
             (sum, detail) => sum + calculateDistanceKm(detail.locations),
             0,
           );
-          const photos = sessionDetails
-            .flatMap((detail) => detail.photos)
-            .sort((a, b) => b.timestamp - a.timestamp)
-            .slice(0, 3)
-            .map((photo) => ({
-              id: String(photo.id ?? `${photo.session_id}-${photo.timestamp}`),
-              uri: photo.public_url ?? photo.local_uri,
-            }));
 
           setProfileStats({
             sessionCount: completedSessions.length,
             elevationGain,
             distanceKm,
           });
-          setRecentPhotos(photos);
         } catch (error) {
           console.error('[Profile] Failed to load local profile stats:', error);
         } finally {
@@ -464,59 +445,7 @@ export default function ProfileScreen() {
           )}
         </TouchableOpacity>
 
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>나의 배지 🏆</Text>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.badgeScroll}>
-            {/* 날씨요정 뱃지 (동적) */}
-            {fairy?.badge && (
-              <View style={styles.badgeItem}>
-                <View style={[styles.badgeCircle, {
-                  backgroundColor:
-                    fairy.badge === 'goblin_boss' ? '#F8D7DA' :
-                      fairy.badge === 'goblin' ? '#FDE8D8' :
-                        fairy.badge === 'gold' ? '#FFF3CD' :
-                          '#E8F8EE',
-                }]}>
-                  <Text style={{ fontSize: 28 }}>{fairy.badgeEmoji}</Text>
-                </View>
-                <Text style={styles.badgeName}>{fairy.badgeLabel}</Text>
-              </View>
-            )}
-            {['북한산 정복', '관악산 완등', '도봉산 마스터', '설악산 도전', '한라산 등정'].map((name, i) => (
-              <View key={i} style={styles.badgeItem}>
-                <View style={styles.badgeCircle}>
-                  <FontAwesome name="trophy" size={28} color="#F1C40F" />
-                </View>
-                <Text style={styles.badgeName}>{name}</Text>
-              </View>
-            ))}
-          </ScrollView>
-        </View>
-
-        <View style={[styles.section, { paddingBottom: 60 }]}>
-          <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>최근 사진 📸</Text>
-            <TouchableOpacity>
-              <Text style={styles.seeAllText}>전체보기</Text>
-            </TouchableOpacity>
-          </View>
-          <View style={styles.photoGrid}>
-            {profileStatsLoading ? (
-              <View style={styles.photoEmptyState}>
-                <ActivityIndicator color="#1DB954" />
-              </View>
-            ) : recentPhotos.length > 0 ? (
-              recentPhotos.map((photo) => (
-                <Image key={photo.id} source={{ uri: photo.uri }} style={styles.gridImage} />
-              ))
-            ) : (
-              <View style={styles.photoEmptyState}>
-                <FontAwesome name="camera" size={22} color="#B8C2CC" />
-                <Text style={styles.photoEmptyText}>아직 덩산 사진이 없습니다.</Text>
-              </View>
-            )}
-          </View>
-        </View>
+        <View style={styles.bottomSpacer} />
       </ScrollView>
 
       {/* 닉네임 수정 모달 */}
@@ -718,13 +647,6 @@ const styles = StyleSheet.create({
   section: {
     marginTop: 30,
   },
-  sectionHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 20,
-    marginBottom: 15,
-  },
   sectionTitle: {
     fontSize: 20,
     fontWeight: '800',
@@ -732,67 +654,8 @@ const styles = StyleSheet.create({
     marginBottom: 15,
     color: '#111',
   },
-  seeAllText: {
-    color: '#1DB954',
-    fontWeight: '600',
-  },
-  badgeScroll: {
-    paddingLeft: 20,
-  },
-  badgeItem: {
-    alignItems: 'center',
-    padding: 15,
-    borderRadius: 16,
-    marginRight: 15,
-    width: 110,
-    backgroundColor: '#FFF',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.05,
-    shadowRadius: 5,
-    elevation: 2,
-  },
-  badgeCircle: {
-    width: 60,
+  bottomSpacer: {
     height: 60,
-    borderRadius: 30,
-    backgroundColor: '#FFF9E6',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 10,
-  },
-  badgeName: {
-    fontSize: 12,
-    fontWeight: '700',
-    textAlign: 'center',
-    color: '#333',
-  },
-  photoGrid: {
-    flexDirection: 'row',
-    paddingHorizontal: 20,
-    justifyContent: 'space-between',
-  },
-  photoEmptyState: {
-    width: '100%',
-    minHeight: 108,
-    borderRadius: 12,
-    backgroundColor: '#FFF',
-    borderWidth: 1,
-    borderColor: '#E8EDF2',
-    borderStyle: 'dashed',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-  },
-  photoEmptyText: {
-    fontSize: 13,
-    color: '#8792A0',
-    fontWeight: '600',
-  },
-  gridImage: {
-    width: '31%',
-    aspectRatio: 1,
-    borderRadius: 12,
   },
   fairyCard: {
     backgroundColor: '#FFF',

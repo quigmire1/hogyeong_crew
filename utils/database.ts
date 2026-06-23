@@ -30,6 +30,7 @@ export type SessionRecord = {
   synced?: number;
   group_hike_id?: string | null;
   group_hike_title?: string | null;
+  group_name?: string | null;
 };
 
 export type CloudSessionRecord = {
@@ -38,6 +39,7 @@ export type CloudSessionRecord = {
   ended_at: string | null;
   group_hike_id?: string | null;
   group_hike_title?: string | null;
+  group_name?: string | null;
 };
 
 export type CloudLocationRecord = {
@@ -62,7 +64,7 @@ export type CloudPhotoRecord = {
 
 const DB_NAME = 'hogyeong_crew.db';
 let _db: SQLite.SQLiteDatabase | null = null;
-const CURRENT_SCHEMA_VERSION = 5;
+const CURRENT_SCHEMA_VERSION = 6;
 
 const getDB = () => {
   if (!_db) {
@@ -208,6 +210,12 @@ const runMigrations = (db: SQLite.SQLiteDatabase) => {
 
     db.execSync(`CREATE INDEX IF NOT EXISTS idx_sessions_group_hike_id ON sessions (group_hike_id);`);
   });
+
+  runMigration(db, 6, () => {
+    if (!columnExists(db, 'sessions', 'group_name')) {
+      db.execSync(`ALTER TABLE sessions ADD COLUMN group_name TEXT;`);
+    }
+  });
 };
 
 export const initDB = async () => {
@@ -228,16 +236,18 @@ export const initDB = async () => {
 export const createSession = async (metadata?: {
   groupHikeId?: string | null;
   groupHikeTitle?: string | null;
+  groupName?: string | null;
 }): Promise<string> => {
   const db = getDB();
   const id = Crypto.randomUUID();
   db.runSync(
-    'INSERT INTO sessions (id, started_at, ended_at, group_hike_id, group_hike_title) VALUES (?, ?, ?, ?, ?)',
+    'INSERT INTO sessions (id, started_at, ended_at, group_hike_id, group_hike_title, group_name) VALUES (?, ?, ?, ?, ?, ?)',
     id,
     Date.now(),
     0,
     metadata?.groupHikeId ?? null,
     metadata?.groupHikeTitle ?? null,
+    metadata?.groupName ?? null,
   );
   return id;
 };
@@ -280,13 +290,14 @@ export const upsertSessionsFromCloud = async (sessions: CloudSessionRecord[]) =>
 
     db.runSync(
       `INSERT OR REPLACE INTO sessions (
-        id, started_at, ended_at, synced, group_hike_id, group_hike_title
-      ) VALUES (?, ?, ?, 1, ?, ?)`,
+        id, started_at, ended_at, synced, group_hike_id, group_hike_title, group_name
+      ) VALUES (?, ?, ?, 1, ?, ?, ?)`,
       session.id,
       startedAt,
       Number.isNaN(endedAt) ? 0 : endedAt,
       session.group_hike_id ?? null,
       session.group_hike_title ?? null,
+      session.group_name ?? null,
     );
   });
 };

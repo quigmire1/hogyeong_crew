@@ -62,9 +62,11 @@ export default function TrackerScreen() {
   const params = useLocalSearchParams<{
     groupHikeId?: string;
     groupHikeTitle?: string;
+    groupName?: string;
   }>();
   const requestedGroupHikeId = getParamString(params.groupHikeId);
   const requestedGroupHikeTitle = getParamString(params.groupHikeTitle);
+  const requestedGroupName = getParamString(params.groupName);
 
   // 덩산 세션 시작 시간 기록용
   const sessionStartRef = useRef<string | null>(null);
@@ -89,13 +91,15 @@ export default function TrackerScreen() {
   const foregroundLocationSubRef = useRef<Location.LocationSubscription | null>(null);
   const [activeGroupHikeId, setActiveGroupHikeId] = useState<string | null>(requestedGroupHikeId ?? null);
   const [activeGroupHikeTitle, setActiveGroupHikeTitle] = useState<string | null>(requestedGroupHikeTitle ?? null);
+  const [activeGroupName, setActiveGroupName] = useState<string | null>(requestedGroupName ?? null);
 
   useEffect(() => {
     if (requestedGroupHikeId) {
       setActiveGroupHikeId(requestedGroupHikeId);
       setActiveGroupHikeTitle(requestedGroupHikeTitle ?? null);
+      setActiveGroupName(requestedGroupName ?? null);
     }
-  }, [requestedGroupHikeId, requestedGroupHikeTitle]);
+  }, [requestedGroupHikeId, requestedGroupHikeTitle, requestedGroupName]);
 
   const loadRouteFromDB = useCallback(async (sessionIdOverride?: string) => {
     try {
@@ -298,6 +302,7 @@ export default function TrackerScreen() {
             : null;
           setActiveGroupHikeId(activeSession?.group_hike_id ?? null);
           setActiveGroupHikeTitle(activeSession?.group_hike_title ?? null);
+          setActiveGroupName(activeSession?.group_name ?? null);
 
           setIsTracking(true);
           await loadRouteFromDB(activeSessionId);
@@ -313,6 +318,7 @@ export default function TrackerScreen() {
             : null;
           setActiveGroupHikeId(activeSession?.group_hike_id ?? null);
           setActiveGroupHikeTitle(activeSession?.group_hike_title ?? null);
+          setActiveGroupName(activeSession?.group_name ?? null);
 
           setIsTracking(true);
           await loadRouteFromDB(activeSessionId);
@@ -324,6 +330,7 @@ export default function TrackerScreen() {
           currentSessionIdRef.current = '';
           setActiveGroupHikeId(requestedGroupHikeId ?? null);
           setActiveGroupHikeTitle(requestedGroupHikeTitle ?? null);
+          setActiveGroupName(requestedGroupName ?? null);
           setRouteCoordinates([]);
           setPhotos([]);
           setElevationGain(0);
@@ -349,6 +356,7 @@ export default function TrackerScreen() {
     requestTrackingPermissions,
     requestedGroupHikeId,
     requestedGroupHikeTitle,
+    requestedGroupName,
     startElapsedTimer,
     startForegroundTracking,
     startRouteRefresh,
@@ -477,6 +485,7 @@ export default function TrackerScreen() {
     let newSessionId = '';
     const groupHikeIdForSession = requestedGroupHikeId ?? activeGroupHikeId;
     const groupHikeTitleForSession = requestedGroupHikeTitle ?? activeGroupHikeTitle;
+    const groupNameForSession = requestedGroupName ?? activeGroupName;
 
     try {
       setErrorMsg(null);
@@ -485,12 +494,14 @@ export default function TrackerScreen() {
       newSessionId = await createSession({
         groupHikeId: groupHikeIdForSession,
         groupHikeTitle: groupHikeTitleForSession,
+        groupName: groupNameForSession,
       });
       currentSessionIdRef.current = newSessionId;
       await setCurrentSessionId(newSessionId);
       sessionStartRef.current = new Date().toISOString();
       setActiveGroupHikeId(groupHikeIdForSession ?? null);
       setActiveGroupHikeTitle(groupHikeTitleForSession ?? null);
+      setActiveGroupName(groupNameForSession ?? null);
       setElapsedSeconds(0);
       console.log('[Tracker] 새 세션 시작:', newSessionId);
 

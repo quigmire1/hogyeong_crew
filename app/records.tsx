@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   View, Text, ScrollView, StyleSheet, TouchableOpacity,
   ActivityIndicator, Image, Dimensions, FlatList,
@@ -155,7 +155,12 @@ const SessionCard = React.memo(({ data, isDark, theme, onReturnToTracker }: {
           <View style={[styles.sessionDot, { backgroundColor: theme.tint }]} />
           <View>
             {session.group_hike_title ? (
-              <Text style={styles.groupSessionTitle} numberOfLines={1}>{session.group_hike_title}</Text>
+              <Text style={styles.groupSessionTitle} numberOfLines={1}>
+                {session.group_hike_title}
+                {session.group_name ? (
+                  <Text style={styles.groupSessionName}> · {session.group_name}</Text>
+                ) : null}
+              </Text>
             ) : null}
             <Text style={[styles.sessionDate, { color: theme.text }]}>{formatDate(session.started_at)}</Text>
             <Text style={styles.sessionTime}>
@@ -257,6 +262,16 @@ export default function RecordsScreen() {
   const [loading, setLoading] = useState(true);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+  const [showGroupRecords, setShowGroupRecords] = useState(false);
+
+  const hasGroupRecords = useMemo(
+    () => sessions.some(({ session }) => Boolean(session.group_hike_id)),
+    [sessions],
+  );
+  const visibleSessions = useMemo(() => {
+    if (groupHikeId || showGroupRecords) return sessions;
+    return sessions.filter(({ session }) => !session.group_hike_id);
+  }, [groupHikeId, sessions, showGroupRecords]);
 
   useEffect(() => {
     (async () => {
@@ -274,17 +289,36 @@ export default function RecordsScreen() {
     })();
   }, [groupHikeId]);
 
+  useEffect(() => {
+    setVisibleCount(PAGE_SIZE);
+  }, [groupHikeId, showGroupRecords]);
+
   return (
     <View style={[styles.container, { backgroundColor: isDark ? '#000' : '#F8F9FA' }]}>
       {/* 헤더 */}
       <LinearGradient colors={['#1DB954', '#0a8a3e']} style={styles.header}>
-        <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
-          <FontAwesome name="chevron-left" size={16} color="#FFF" />
-          <Text style={styles.backText} numberOfLines={1}>{backLabel}</Text>
-        </TouchableOpacity>
+        <View style={styles.headerTopRow}>
+          <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
+            <FontAwesome name="chevron-left" size={16} color="#FFF" />
+            <Text style={styles.backText} numberOfLines={1}>{backLabel}</Text>
+          </TouchableOpacity>
+          {!groupHikeId && hasGroupRecords ? (
+            <TouchableOpacity
+              style={styles.groupToggleBtn}
+              onPress={() => setShowGroupRecords((value) => !value)}
+              activeOpacity={0.85}
+            >
+              <Text style={styles.groupToggleText}>
+                {showGroupRecords ? '개인 기록만 보기' : '그룹 기록도 함께보기'}
+              </Text>
+            </TouchableOpacity>
+          ) : null}
+        </View>
         <Text style={styles.headerTitle}>{groupHikeId ? '그룹 덩산 기록' : '내 덩산 기록'}</Text>
         <Text style={styles.headerSub}>
-          {loading ? '불러오는 중...' : groupHikeTitle ?? (sessions.length > 0 ? `총 ${sessions.length}회 덩산` : '기록된 덩산이 없습니다')}
+          {loading
+            ? '불러오는 중...'
+            : groupHikeTitle ?? (visibleSessions.length > 0 ? `총 ${visibleSessions.length}회 덩산` : '기록된 덩산이 없습니다')}
         </Text>
       </LinearGradient>
 
@@ -292,7 +326,7 @@ export default function RecordsScreen() {
         <View style={styles.center}>
           <ActivityIndicator size="large" color={theme.tint} />
         </View>
-      ) : sessions.length === 0 ? (
+      ) : visibleSessions.length === 0 ? (
         <View style={styles.empty}>
           <Text style={styles.emptyEmoji}>🏔️</Text>
           <Text style={[styles.emptyTitle, { color: theme.text }]}>아직 덩산 기록이 없어요</Text>
@@ -313,7 +347,7 @@ export default function RecordsScreen() {
         </View>
       ) : (
         <FlatList
-          data={sessions.slice(0, visibleCount)}
+          data={visibleSessions.slice(0, visibleCount)}
           keyExtractor={(item) => item.session.id}
           renderItem={({ item }) => (
             <SessionCard
@@ -325,15 +359,15 @@ export default function RecordsScreen() {
           )}
           contentContainerStyle={styles.list}
           onEndReached={() => {
-            setVisibleCount((count) => Math.min(count + PAGE_SIZE, sessions.length));
+            setVisibleCount((count) => Math.min(count + PAGE_SIZE, visibleSessions.length));
           }}
           onEndReachedThreshold={0.4}
           ListFooterComponent={
             <>
-              {visibleCount < sessions.length ? (
+              {visibleCount < visibleSessions.length ? (
                 <TouchableOpacity
                   style={[styles.loadMoreBtn, { backgroundColor: isDark ? '#1A1A1A' : '#FFF' }]}
-                  onPress={() => setVisibleCount((count) => Math.min(count + PAGE_SIZE, sessions.length))}
+                  onPress={() => setVisibleCount((count) => Math.min(count + PAGE_SIZE, visibleSessions.length))}
                 >
                   <Text style={[styles.loadMoreText, { color: theme.tint }]}>기록 더 보기</Text>
                 </TouchableOpacity>
@@ -370,8 +404,11 @@ export default function RecordsScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1 },
   header: { paddingTop: 55, paddingBottom: 22, paddingHorizontal: 22, borderBottomLeftRadius: 30, borderBottomRightRadius: 30 },
-  backBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 8, alignSelf: 'flex-start', maxWidth: width - 44 },
+  headerTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 8 },
+  backBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'flex-start', maxWidth: width - 44 },
   backText: { color: 'rgba(255,255,255,0.85)', fontSize: 14, fontWeight: '600', flexShrink: 1 },
+  groupToggleBtn: { backgroundColor: 'rgba(255,255,255,0.18)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.26)', paddingHorizontal: 10, paddingVertical: 7, borderRadius: 14, maxWidth: 150 },
+  groupToggleText: { color: '#FFF', fontSize: 11, fontWeight: '800' },
   headerTitle: { fontSize: 26, fontWeight: '900', color: '#FFF' },
   headerSub: { fontSize: 13, color: 'rgba(255,255,255,0.75)', marginTop: 4 },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
@@ -393,6 +430,7 @@ const styles = StyleSheet.create({
   sessionDateRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   sessionDot: { width: 10, height: 10, borderRadius: 5 },
   groupSessionTitle: { maxWidth: width - 180, color: '#1DB954', fontSize: 12, fontWeight: '800', marginBottom: 2 },
+  groupSessionName: { color: '#999', fontSize: 11, fontWeight: '700' },
   sessionDate: { fontSize: 15, fontWeight: '800' },
   sessionTime: { fontSize: 12, color: '#999', marginTop: 2 },
   sessionQuickStats: { flexDirection: 'row', alignItems: 'center', gap: 4 },

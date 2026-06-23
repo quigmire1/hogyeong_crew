@@ -12,6 +12,8 @@ import { Colors } from '../../constants/theme';
 import { useColorScheme } from '../../hooks/use-color-scheme';
 import { supabase } from '../../utils/supabase';
 import { useAuth } from '../../contexts/AuthContext';
+import { geocodeHikeLocation } from '../../utils/geocoding';
+import HikeLocationPicker from '../../components/HikeLocationPicker';
 
 // ─── 한글 입력 보완: 컴포넌트 함수 내부에 정의하면 렌더마다 새 타입으로
 // 인식되어 IME 조합 중 포커스가 해제됩니다. 반드시 최상위 레벨에 정의해야 합니다.
@@ -66,6 +68,8 @@ interface GroupHike {
   meeting_at: string;
   start_time?: string | null;
   meeting_point: string;
+  forecast_lat?: number | null;
+  forecast_lon?: number | null;
   summary_text?: string;
   creator_id: string;
   status: GroupHikeStatus | 'planned' | 'completed';
@@ -195,16 +199,21 @@ export default function GroupsScreen() {
   const [participantMembers, setParticipantMembers] = useState<HikeParticipant[]>([]);
   const [participantModalMode, setParticipantModalMode] = useState<'participants' | 'attendance'>('participants');
   const [participantLoading, setParticipantLoading] = useState(false);
+  const [locationPickerTarget, setLocationPickerTarget] = useState<'create' | 'edit' | null>(null);
 
   // Inputs
   const [newGroupName, setNewGroupName] = useState('');
   const [newGroupDesc, setNewGroupDesc] = useState('');
   const [inviteCodeInput, setInviteCodeInput] = useState('');
-  const [newHike, setNewHike] = useState({
-    mountain_name: '', meeting_at: '', meeting_point: '',
+  const [newHike, setNewHike] = useState<{
+    mountain_name: string; meeting_at: string; meeting_point: string; forecast_lat: number | null; forecast_lon: number | null;
+  }>({
+    mountain_name: '', meeting_at: '', meeting_point: '', forecast_lat: null, forecast_lon: null,
   });
-  const [editHike, setEditHike] = useState({
-    mountain_name: '', meeting_at: '', meeting_point: '',
+  const [editHike, setEditHike] = useState<{
+    mountain_name: string; meeting_at: string; meeting_point: string; forecast_lat: number | null; forecast_lon: number | null;
+  }>({
+    mountain_name: '', meeting_at: '', meeting_point: '', forecast_lat: null, forecast_lon: null,
   });
   const [isDatePickerVisible, setDatePickerVisibility] = useState(false);
   const [datePickerTarget, setDatePickerTarget] = useState<'create' | 'edit'>('create');
@@ -269,6 +278,40 @@ export default function GroupsScreen() {
       cancelTextIOS="취소"
     />
   );
+
+  const renderLocationButton = (target: 'create' | 'edit') => {
+    const form = target === 'create' ? newHike : editHike;
+    const textColor = form.meeting_point ? (isDark ? '#FFF' : '#111') : (isDark ? '#555' : '#AAA');
+
+    return (
+      <TouchableOpacity
+        style={[
+          styles.locationButton,
+          { borderColor: isDark ? '#333' : '#EEE', backgroundColor: isDark ? '#2A2A2A' : '#FAFAFA' },
+        ]}
+        onPress={() => setLocationPickerTarget(target)}
+      >
+        <FontAwesome name="map-marker" size={16} color="#1DB954" />
+        <Text style={[styles.locationButtonText, { color: textColor }]} numberOfLines={1}>
+          {form.meeting_point || '집결 장소'}
+        </Text>
+      </TouchableOpacity>
+    );
+  };
+
+  const handleSelectLocation = (location: { name: string; latitude: number; longitude: number }) => {
+    const update = {
+      meeting_point: location.name,
+      forecast_lat: location.latitude,
+      forecast_lon: location.longitude,
+    };
+
+    if (locationPickerTarget === 'edit') {
+      setEditHike((prev) => ({ ...prev, ...update }));
+    } else {
+      setNewHike((prev) => ({ ...prev, ...update }));
+    }
+  };
 
   const renderHikeDateTimeButtons = (target: 'create' | 'edit', meetingAt: string) => {
     const placeholderColor = isDark ? '#555' : '#AAA';
@@ -633,6 +676,9 @@ export default function GroupsScreen() {
 
     setIsCreatingHike(true);
     try {
+      const forecastLocation = newHike.forecast_lat != null && newHike.forecast_lon != null
+        ? { latitude: newHike.forecast_lat, longitude: newHike.forecast_lon }
+        : await geocodeHikeLocation(newHike.mountain_name, newHike.meeting_point);
       const { data, error } = await supabase
         .from('group_hikes')
         .insert([{
@@ -641,6 +687,8 @@ export default function GroupsScreen() {
           group_id: selectedGroup?.id,
           creator_id: user.id,
           status: 'SCHEDULED',
+          forecast_lat: forecastLocation?.latitude ?? null,
+          forecast_lon: forecastLocation?.longitude ?? null,
         }])
         .select().single();
       if (error) throw error;
@@ -651,7 +699,7 @@ export default function GroupsScreen() {
       if (attendanceError && !isDuplicateMembershipError(attendanceError)) throw attendanceError;
 
       setCreateHikeModal(false);
-      setNewHike({ mountain_name: '', meeting_at: '', meeting_point: '' });
+      setNewHike({ mountain_name: '', meeting_at: '', meeting_point: '', forecast_lat: null, forecast_lon: null });
       if (selectedGroup) fetchGroupHikes(selectedGroup.id);
     } catch (e: any) {
       Alert.alert('오류', e.message);
@@ -671,6 +719,8 @@ export default function GroupsScreen() {
       mountain_name: hike.mountain_name ?? '',
       meeting_at: hike.meeting_at ?? '',
       meeting_point: hike.meeting_point ?? '',
+      forecast_lat: hike.forecast_lat ?? null,
+      forecast_lon: hike.forecast_lon ?? null,
     });
     setEditHikeModal(true);
   };
@@ -682,6 +732,9 @@ export default function GroupsScreen() {
 
     setIsUpdatingHike(true);
     try {
+      const forecastLocation = editHike.forecast_lat != null && editHike.forecast_lon != null
+        ? { latitude: editHike.forecast_lat, longitude: editHike.forecast_lon }
+        : await geocodeHikeLocation(editHike.mountain_name, editHike.meeting_point);
       const { error } = await supabase
         .from('group_hikes')
         .update({
@@ -689,6 +742,8 @@ export default function GroupsScreen() {
           meeting_at: editHike.meeting_at,
           start_time: editHike.meeting_at,
           meeting_point: editHike.meeting_point.trim() || null,
+          forecast_lat: forecastLocation?.latitude ?? editingHike.forecast_lat ?? null,
+          forecast_lon: forecastLocation?.longitude ?? editingHike.forecast_lon ?? null,
         })
         .eq('id', editingHike.id)
         .eq('creator_id', user.id)
@@ -705,7 +760,7 @@ export default function GroupsScreen() {
 
       setEditHikeModal(false);
       setEditingHike(null);
-      setEditHike({ mountain_name: '', meeting_at: '', meeting_point: '' });
+      setEditHike({ mountain_name: '', meeting_at: '', meeting_point: '', forecast_lat: null, forecast_lon: null });
       refreshSelectedGroupHikes();
     } catch (e: any) {
       Alert.alert('오류', e.message);
@@ -762,6 +817,7 @@ export default function GroupsScreen() {
       params: {
         groupHikeId: hike.id,
         groupHikeTitle: formatGroupHikeName(hike),
+        groupName: selectedGroup?.name ?? '',
       },
     });
   };
@@ -1027,6 +1083,11 @@ export default function GroupsScreen() {
 
   // ─── View: Hike List ─────────────────────────────────────────────────────────
 
+  const locationPickerForm = locationPickerTarget === 'edit' ? editHike : newHike;
+  const locationPickerCoordinate = locationPickerForm.forecast_lat != null && locationPickerForm.forecast_lon != null
+    ? { latitude: locationPickerForm.forecast_lat, longitude: locationPickerForm.forecast_lon }
+    : null;
+
   if (view === 'hikes' && selectedGroup) {
     return (
       <View style={[styles.container, { backgroundColor: isDark ? '#000' : '#F8F9FA' }]}>
@@ -1085,7 +1146,7 @@ export default function GroupsScreen() {
               <ScrollView>
                 <StyledInput placeholder="산 이름" value={newHike.mountain_name} onChangeText={(t: string) => setNewHike({ ...newHike, mountain_name: t })} />
                 {renderHikeDateTimeButtons('create', newHike.meeting_at)}
-                <StyledInput placeholder="집결 장소" value={newHike.meeting_point} onChangeText={(t: string) => setNewHike({ ...newHike, meeting_point: t })} />
+                {renderLocationButton('create')}
                 {renderHikeDatePicker('create')}
                 <TouchableOpacity
                   style={[styles.submitBtn, { backgroundColor: theme.tint }, isCreatingHike && styles.submitBtnDisabled]}
@@ -1121,7 +1182,7 @@ export default function GroupsScreen() {
               <ScrollView>
                 <StyledInput placeholder="산 이름" value={editHike.mountain_name} onChangeText={(t: string) => setEditHike({ ...editHike, mountain_name: t })} />
                 {renderHikeDateTimeButtons('edit', editHike.meeting_at)}
-                <StyledInput placeholder="집결 장소" value={editHike.meeting_point} onChangeText={(t: string) => setEditHike({ ...editHike, meeting_point: t })} />
+                {renderLocationButton('edit')}
                 {renderHikeDatePicker('edit')}
                 <TouchableOpacity
                   style={[styles.submitBtn, { backgroundColor: theme.tint }, isUpdatingHike && styles.submitBtnDisabled]}
@@ -1137,6 +1198,16 @@ export default function GroupsScreen() {
             </View>
           </View>
         </Modal>
+
+        <HikeLocationPicker
+          visible={locationPickerTarget !== null}
+          title="집결지 선택"
+          initialName={locationPickerForm.meeting_point}
+          initialCoordinate={locationPickerCoordinate}
+          isDark={isDark}
+          onClose={() => setLocationPickerTarget(null)}
+          onSelect={handleSelectLocation}
+        />
 
         {/* 참석자 목록 모달 */}
         <Modal visible={participantModalVisible} animationType="fade" transparent>
@@ -1486,6 +1557,8 @@ const styles = StyleSheet.create({
   attendanceRateText: { color: '#1DB954', fontSize: 15, fontWeight: '900' },
   attendanceCountText: { color: '#8A949E', fontSize: 11, fontWeight: '700', marginTop: 2 },
   input: { borderWidth: 1, borderRadius: 12, padding: 13, marginBottom: 12, fontSize: 15 },
+  locationButton: { minHeight: 48, borderWidth: 1, borderRadius: 12, paddingHorizontal: 13, marginBottom: 12, flexDirection: 'row', alignItems: 'center', gap: 8 },
+  locationButtonText: { flex: 1, fontSize: 15 },
   dateTimeRow: { flexDirection: 'row', gap: 10, marginBottom: 12 },
   dateTimeButton: {
     flex: 1,
